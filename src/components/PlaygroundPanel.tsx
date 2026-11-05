@@ -1,3 +1,4 @@
+import { useLockStatus } from "../hooks/useLockStatus";
 import { useResolverAccess } from "../hooks/useResolverAccess";
 import { labelhashId } from "../lib/names";
 import { useDeployment } from "../hooks/useDeployment";
@@ -35,7 +36,14 @@ import { useLab } from "../state/LabContext";
 import { explorerName } from "../lib/links";
 import { useIsReady } from "./ChainGuard";
 import { TxStepper } from "./TxStepper";
-import { AddressLink, Badge, ExternalLink, NameChip, StatCard, formatExpiry } from "./ui";
+import {
+  AddressLink,
+  Badge,
+  ExternalLink,
+  NameChip,
+  StatCard,
+  formatExpiry,
+} from "./ui";
 import type { StepDef } from "../lib/steps";
 
 const YEAR = 365n * 86400n;
@@ -49,6 +57,7 @@ export function PlaygroundPanel() {
   const { session } = useLab();
   const nameStatus = useNameStatus(session?.parentLabel, address);
   const registry = session?.addresses.userRegistry;
+  const { registryLocked } = useLockStatus(registry, session?.parentLabel);
   // The shared resolver is on-chain truth: whatever the parent name points at
   // on the .eth registry (the setup sequence keeps this in sync). The session
   // resolver is only a planning value and can drift across replace/relink.
@@ -82,7 +91,9 @@ export function PlaygroundPanel() {
   const [foreverOverride, setForeverOverride] = useState<boolean | null>(null);
   const [via, setVia] = useState<"direct" | "registrar">("direct");
   const [formError, setFormError] = useState<string>();
-  const [resolveResults, setResolveResults] = useState<Record<string, string>>({});
+  const [resolveResults, setResolveResults] = useState<Record<string, string>>(
+    {},
+  );
   const [inspected, setInspected] = useState<DiagramNode | null>(null);
 
   const preset = session?.presetId ? getPreset(session.presetId) : undefined;
@@ -98,7 +109,7 @@ export function PlaygroundPanel() {
       registrar,
       registrarRoles: preset?.registrar?.grantBitmap,
       resolver,
-      locked: session.locked.registryLocked,
+      locked: registryLocked,
       subnames: subnames
         .filter((s) => s.registered)
         .map((s) => ({
@@ -107,7 +118,17 @@ export function PlaygroundPanel() {
           resolver: s.resolver,
         })),
     });
-  }, [session, registry, registrar, resolver, subnames, preset, address, parentName]);
+  }, [
+    session,
+    registry,
+    registrar,
+    resolver,
+    subnames,
+    preset,
+    address,
+    parentName,
+    registryLocked,
+  ]);
 
   if (!session || !address || !registry) return null;
 
@@ -152,7 +173,8 @@ export function PlaygroundPanel() {
         ? MAX_EXPIRY
         : BigInt(Math.floor(Date.now() / 1000)) + BigInt(years) * YEAR;
       await runPlan(
-        buildDirectRegisterStep({ chainId: network.id,
+        buildDirectRegisterStep({
+          chainId: network.id,
           userRegistry: registry,
           label: cleanLabel,
           owner,
@@ -171,10 +193,22 @@ export function PlaygroundPanel() {
           functionName: "getPrice",
           args: [duration],
         })) as bigint;
-        const state = await client.readContract({ address: registry, abi: registryAbi, functionName: "getState", args: [labelhashId(cleanLabel)] });
-        if (state.status === 2 && state.latestOwner.toLowerCase() !== owner.toLowerCase()) throw new Error("Renewal keeps the existing owner; enter that address.");
+        const state = await client.readContract({
+          address: registry,
+          abi: registryAbi,
+          functionName: "getState",
+          args: [labelhashId(cleanLabel)],
+        });
+        if (
+          state.status === 2 &&
+          state.latestOwner.toLowerCase() !== owner.toLowerCase()
+        )
+          throw new Error(
+            "Renewal keeps the existing owner; enter that address.",
+          );
         await runPlan(
-          buildRegistrarRegisterSteps({ chainId: network.id,
+          buildRegistrarRegisterSteps({
+            chainId: network.id,
             registrar,
             userRegistry: registry,
             label: cleanLabel,
@@ -196,7 +230,8 @@ export function PlaygroundPanel() {
   const setAddrFor = async (subLabel: string) => {
     if (!resolver || !canWriteRecords) return;
     await runPlan(
-      buildSetAddrStep({ chainId: network.id,
+      buildSetAddrStep({
+        chainId: network.id,
         resolver,
         node: subnameNode(subLabel, parentName),
         fqdn: fqdn(subLabel, parentName),
@@ -208,7 +243,8 @@ export function PlaygroundPanel() {
   const switchResolverFor = async (subLabel: string) => {
     if (!registry || !session) return;
     await runPlan(
-      buildSwitchResolverSteps({ chainId: network.id,
+      buildSwitchResolverSteps({
+        chainId: network.id,
         userRegistry: registry,
         parentLabel: session.parentLabel,
         label: subLabel,
@@ -237,10 +273,10 @@ export function PlaygroundPanel() {
     }
   };
 
-  const registryLocked = session.locked.registryLocked;
-
   const registeredCount = subnames.filter((s) => s.registered).length;
-  const foreverCount = subnames.filter((s) => s.registered && s.neverExpires).length;
+  const foreverCount = subnames.filter(
+    (s) => s.registered && s.neverExpires,
+  ).length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -255,7 +291,9 @@ export function PlaygroundPanel() {
         <StatCard
           label="Registrar"
           value={registrar ? <AddressLink address={registrar} /> : "—"}
-          hint={registrar ? "Paid registrations enabled" : "No registrar deployed"}
+          hint={
+            registrar ? "Paid registrations enabled" : "No registrar deployed"
+          }
         />
         <StatCard
           label="Shared resolver"
@@ -301,7 +339,6 @@ export function PlaygroundPanel() {
             <button
               type="button"
               onClick={() => setVia("direct")}
-              disabled={registryLocked && false}
               className={`rounded-full px-3 py-1 ${via === "direct" ? "bg-neutral-900 text-white" : "border border-neutral-300"}`}
             >
               as owner (free)
@@ -347,7 +384,9 @@ export function PlaygroundPanel() {
                 min="1"
                 max="100"
                 value={years}
-                onChange={(e) => setYears(Math.max(1, Number(e.target.value || 1)))}
+                onChange={(e) =>
+                  setYears(Math.max(1, Number(e.target.value || 1)))
+                }
                 className="w-20 rounded-lg border border-neutral-300 px-3 py-2"
               />
             </label>
@@ -376,14 +415,24 @@ export function PlaygroundPanel() {
             <span className="opacity-70">
               Your USDC: {(Number(usdc.balance) / 1e6).toFixed(2)}
             </span>
-            {network.canMint && <button
-              type="button"
-              disabled={!ready || sequence.status === "running"}
-              onClick={() => runPlan(buildFaucetStep({ chainId: network.id, account: address, amount: 100_000_000n }))}
-              className="rounded-lg border border-neutral-300 px-3 py-1 hover:border-neutral-600 disabled:opacity-40"
-            >
-              Faucet: mint 100 USDC
-            </button>}
+            {network.canMint && (
+              <button
+                type="button"
+                disabled={!ready || sequence.status === "running"}
+                onClick={() =>
+                  runPlan(
+                    buildFaucetStep({
+                      chainId: network.id,
+                      account: address,
+                      amount: 100_000_000n,
+                    }),
+                  )
+                }
+                className="rounded-lg border border-neutral-300 px-3 py-1 hover:border-neutral-600 disabled:opacity-40"
+              >
+                Faucet: mint 100 USDC
+              </button>
+            )}
           </div>
         )}
         {formError && <p className="text-sm text-red-700">{formError}</p>}
@@ -428,7 +477,9 @@ export function PlaygroundPanel() {
                   <Badge tone="green">never expires</Badge>
                 ) : (
                   <Badge tone={sub.registered ? "green" : "red"}>
-                    {sub.registered ? `expires ${formatExpiry(sub.expiry)}` : "expired"}
+                    {sub.registered
+                      ? `expires ${formatExpiry(sub.expiry)}`
+                      : "expired"}
                   </Badge>
                 )}
               </div>
@@ -438,16 +489,21 @@ export function PlaygroundPanel() {
                 )}
                 {/* Works for resolver-less subnames too: resolution falls back
                     to the shared resolver, where records are keyed by namehash */}
-                {resolver && classifyResolver(sub.resolver, resolver) !== "foreign" && (
-                  <button
-                    type="button"
-                    onClick={() => setAddrFor(sub.label)}
-                    disabled={!canWriteRecords || !ready || sequence.status === "running"}
-                    className="underline decoration-dotted underline-offset-2 disabled:opacity-40"
-                  >
-                    set my address
-                  </button>
-                )}
+                {resolver &&
+                  classifyResolver(sub.resolver, resolver) !== "foreign" && (
+                    <button
+                      type="button"
+                      onClick={() => setAddrFor(sub.label)}
+                      disabled={
+                        !canWriteRecords ||
+                        !ready ||
+                        sequence.status === "running"
+                      }
+                      className="underline decoration-dotted underline-offset-2 disabled:opacity-40"
+                    >
+                      set my address
+                    </button>
+                  )}
                 {sub.owner.toLowerCase() === address.toLowerCase() &&
                   classifyResolver(sub.resolver, resolver) !== "foreign" && (
                     <button
@@ -467,7 +523,9 @@ export function PlaygroundPanel() {
                 >
                   resolve check
                 </button>
-                <ExternalLink href={explorerName(fqdn(sub.label, parentName), network.id)}>
+                <ExternalLink
+                  href={explorerName(fqdn(sub.label, parentName), network.id)}
+                >
                   explorer
                 </ExternalLink>
               </div>
@@ -475,7 +533,8 @@ export function PlaygroundPanel() {
                 <p className="w-full text-xs">
                   resolves to:{" "}
                   <code className="font-mono">{resolveResults[sub.label]}</code>
-                  {resolveResults[sub.label].toLowerCase() === address.toLowerCase() && " ✓"}
+                  {resolveResults[sub.label].toLowerCase() ===
+                    address.toLowerCase() && " ✓"}
                 </p>
               )}
             </li>
@@ -486,22 +545,23 @@ export function PlaygroundPanel() {
       {/* Renew via registrar */}
       {registrar && (
         <p className="text-xs opacity-60">
-          Renewals: choose "via registrar" and enter an existing name's label to extend
-          it, or ask the owner to renew directly. Registry status refreshes with ↻.
+          Renewals: choose "via registrar" and enter an existing name's label to
+          extend it, or ask the owner to renew directly. Registry status
+          refreshes with ↻.
         </p>
       )}
 
       <p className="text-xs opacity-60">
-        Tip: to try a different configuration on {parentName}, scroll up to "Current setup"
-        and choose "Replace with a new setup". Old registries keep their subnames and can be
-        re-adopted later.
+        Tip: to try a different configuration on {parentName}, scroll up to
+        "Current setup" and choose "Replace with a new setup". Old registries
+        keep their subnames and can be re-adopted later.
       </p>
       {nameStatus.hasSubregistry &&
         registry &&
         nameStatus.subregistry?.toLowerCase() !== registry.toLowerCase() && (
           <p className="text-sm text-amber-800">
-            Heads up: {parentName} currently points at a different registry than this
-            session's. Re-run the link step or adopt the on-chain one.
+            Heads up: {parentName} currently points at a different registry than
+            this session's. Re-run the link step or adopt the on-chain one.
           </p>
         )}
     </div>
@@ -566,14 +626,17 @@ function ResolverInspector({
       </div>
       {isOverflow ? (
         <p className="text-sm opacity-70">
-          Several subnames use their own distinct resolvers; see the badges in the
-          subname list below.
+          Several subnames use their own distinct resolvers; see the badges in
+          the subname list below.
         </p>
       ) : (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span className="opacity-60">serves:</span>
           {servesParent && (
-            <NameChip name={parentName} href={explorerName(parentName, network.id)} />
+            <NameChip
+              name={parentName}
+              href={explorerName(parentName, network.id)}
+            />
           )}
           {servedSubnames.map((s) => (
             <NameChip
@@ -589,9 +652,9 @@ function ResolverInspector({
       )}
       {isShared && (
         <p className="text-xs opacity-60">
-          This is whatever resolver the parent name points at on the .eth registry.
-          Subnames registered through this app use it by default; a subname can
-          switch to its own resolver at any time.
+          This is whatever resolver the parent name points at on the .eth
+          registry. Subnames registered through this app use it by default; a
+          subname can switch to its own resolver at any time.
         </p>
       )}
     </div>

@@ -69,13 +69,15 @@ describe("buildSetupSteps", () => {
     // fresh deploy: resolver lands in ctx before this step runs
     expect(step.skipIf!(baseCtx({ deployResolver: true }))).toBe(false);
     // reusing an existing resolver
-    expect(step.skipIf!(baseCtx({ deployResolver: false, resolver: RESOLVER }))).toBe(
-      false,
-    );
+    expect(
+      step.skipIf!(baseCtx({ deployResolver: false, resolver: RESOLVER })),
+    ).toBe(false);
   });
 
   it("set-parent records the ETHRegistry as parent and verifies via getParent", async () => {
-    const step = buildSetupSteps("fully-controlled").find((s) => s.id === "set-parent")!;
+    const step = buildSetupSteps("fully-controlled").find(
+      (s) => s.id === "set-parent",
+    )!;
     const ctx = baseCtx({ userRegistry: REGISTRY });
     const action = step.build(ctx);
     if (action.type !== "write") throw new Error("expected write");
@@ -83,30 +85,47 @@ describe("buildSetupSteps", () => {
     expect(action.functionName).toBe("setParent");
     expect(action.args).toEqual([deployments.ETHRegistry, "nick"]);
 
-    const good = await step.verify!(async () => [deployments.ETHRegistry, "nick"], ctx);
+    const good = await step.verify!(
+      async () => [deployments.ETHRegistry, "nick"],
+      ctx,
+    );
     expect(good.ok).toBe(true);
-    const bad = await step.verify!(async () => [deployments.ETHRegistry, "other"], ctx);
+    const bad = await step.verify!(
+      async () => [deployments.ETHRegistry, "other"],
+      ctx,
+    );
     expect(bad.ok).toBe(false);
   });
 
   it("registrar steps skip when no registrar params in ctx", () => {
     const steps = buildSetupSteps("fully-controlled");
     const ctx = baseCtx(); // no registrarParams
-    expect(steps.find((s) => s.id === "deploy-registrar")!.skipIf!(ctx)).toBe(true);
-    expect(steps.find((s) => s.id === "grant-registrar")!.skipIf!(ctx)).toBe(true);
-    expect(steps.find((s) => s.id === "deploy-registry")!.skipIf).toBeUndefined();
+    expect(steps.find((s) => s.id === "deploy-registrar")!.skipIf!(ctx)).toBe(
+      true,
+    );
+    expect(steps.find((s) => s.id === "grant-registrar")!.skipIf!(ctx)).toBe(
+      true,
+    );
+    expect(
+      steps.find((s) => s.id === "deploy-registry")!.skipIf,
+    ).toBeUndefined();
   });
 
   it("resolver step skips when deployResolver=false", () => {
     const steps = buildSetupSteps("fully-controlled");
-    expect(steps.find((s) => s.id === "deploy-resolver")!.skipIf!(baseCtx({ deployResolver: false }))).toBe(true);
+    expect(
+      steps.find((s) => s.id === "deploy-resolver")!.skipIf!(
+        baseCtx({ deployResolver: false }),
+      ),
+    ).toBe(true);
   });
 
   it("deploy-registry targets the factory with fresh salts per build", () => {
     const step = buildSetupSteps("fully-controlled")[0];
     const a = step.build(baseCtx());
     const b = step.build(baseCtx());
-    if (a.type !== "write" || b.type !== "write") throw new Error("expected writes");
+    if (a.type !== "write" || b.type !== "write")
+      throw new Error("expected writes");
     expect(a.address).toBe(deployments.VerifiableFactory);
     expect(a.functionName).toBe("deployProxy");
     // args: [impl, salt, initData] - salt differs between attempts
@@ -115,7 +134,9 @@ describe("buildSetupSteps", () => {
   });
 
   it("link step threads the deployed registry through ctx", () => {
-    const step = buildSetupSteps("fully-controlled").find((s) => s.id === "link")!;
+    const step = buildSetupSteps("fully-controlled").find(
+      (s) => s.id === "link",
+    )!;
     const action = step.build(baseCtx({ userRegistry: REGISTRY }));
     if (action.type !== "write") throw new Error("expected write");
     expect(action.address).toBe(deployments.ETHRegistry);
@@ -124,11 +145,16 @@ describe("buildSetupSteps", () => {
   });
 
   it("link verify reads back the subregistry pointer", async () => {
-    const step = buildSetupSteps("fully-controlled").find((s) => s.id === "link")!;
+    const step = buildSetupSteps("fully-controlled").find(
+      (s) => s.id === "link",
+    )!;
     const read = async () => REGISTRY;
     const res = await step.verify!(read, baseCtx({ userRegistry: REGISTRY }));
     expect(res.ok).toBe(true);
-    const bad = await step.verify!(async () => RESOLVER, baseCtx({ userRegistry: REGISTRY }));
+    const bad = await step.verify!(
+      async () => RESOLVER,
+      baseCtx({ userRegistry: REGISTRY }),
+    );
     expect(bad.ok).toBe(false);
   });
 
@@ -144,7 +170,9 @@ describe("buildSetupSteps", () => {
         grantBitmap: preset.registrar!.grantBitmap,
       },
     });
-    const step = buildSetupSteps(preset).find((s) => s.id === "grant-registrar")!;
+    const step = buildSetupSteps(preset).find(
+      (s) => s.id === "grant-registrar",
+    )!;
     const action = step.build(ctx);
     if (action.type !== "write") throw new Error("expected write");
     expect(action.address).toBe(REGISTRY);
@@ -180,13 +208,42 @@ describe("action builders", () => {
       currentAllowance: 0n,
     };
     const short = buildRegistrarRegisterSteps(params);
-    expect((await short[0].verify!(async () => 0n, {} as StepCtx)).ok).toBe(false);
-    const covered = buildRegistrarRegisterSteps({ ...params, currentAllowance: 5_000_000n });
-    expect((await covered[0].verify!(async () => 5_000_000n, {} as StepCtx)).ok).toBe(true);
+    expect((await short[0].verify!(async () => 0n, {} as StepCtx)).ok).toBe(
+      false,
+    );
+    const covered = buildRegistrarRegisterSteps({
+      ...params,
+      currentAllowance: 5_000_000n,
+    });
+    expect(
+      (await covered[0].verify!(async () => 5_000_000n, {} as StepCtx)).ok,
+    ).toBe(true);
   });
 
+  it("verifies a paid renewal without requiring the shared resolver", async () => {
+    const steps = buildRegistrarRegisterSteps({
+      registrar: REGISTRAR,
+      userRegistry: REGISTRY,
+      label: "alice",
+      owner: ACCOUNT,
+      resolver: RESOLVER,
+      duration: 30n,
+      price: 1n,
+      currentAllowance: 0n,
+      renewFromExpiry: 100n,
+    });
+    const result = await steps[1].verify!(async ({ functionName }) => {
+      if (functionName !== "getState")
+        throw new Error("Renewal must not require a resolver read");
+      return { latestOwner: ACCOUNT, status: 2, expiry: 130n };
+    }, {} as StepCtx);
+    expect(result.ok).toBe(true);
+  });
   it("revoke-registry-roles revokes the dangerous bitmap from the account", () => {
-    const [step] = buildRevokeRegistryRolesStep({ userRegistry: REGISTRY, account: ACCOUNT });
+    const [step] = buildRevokeRegistryRolesStep({
+      userRegistry: REGISTRY,
+      account: ACCOUNT,
+    });
     const action = step.build({} as StepCtx);
     if (action.type !== "write") throw new Error("expected write");
     expect(action.functionName).toBe("revokeRootRoles");
@@ -204,17 +261,41 @@ describe("action builders", () => {
     if (action.type !== "write") throw new Error("expected write");
     expect(action.functionName).toBe("revokeRoles");
     expect(action.args[0]).toBe(resource);
-    expect(action.args[1]).toBe(ROLE_SET_SUBREGISTRY | adminOf(ROLE_SET_SUBREGISTRY));
+    expect(action.args[1]).toBe(
+      ROLE_SET_SUBREGISTRY | adminOf(ROLE_SET_SUBREGISTRY),
+    );
   });
 
   it("lock verify reports ok only when roles are gone", async () => {
-    const [step] = buildRevokeRegistryRolesStep({ userRegistry: REGISTRY, account: ACCOUNT });
-    const read = (roles: bigint, counts: bigint, emancipated: boolean) => async ({ functionName }: { functionName: string }) => functionName === "roles" ? roles : functionName === "roleCount" ? counts : emancipated;
-    expect((await step.verify!(read(0n, 0n, true), {} as StepCtx)).ok).toBe(true);
+    const [step] = buildRevokeRegistryRolesStep({
+      userRegistry: REGISTRY,
+      account: ACCOUNT,
+    });
+    const read =
+      (roles: bigint, counts: bigint, emancipated: boolean) =>
+      async ({ functionName }: { functionName: string }) =>
+        functionName === "roles"
+          ? roles
+          : functionName === "roleCount"
+            ? counts
+            : emancipated;
+    expect((await step.verify!(read(0n, 0n, true), {} as StepCtx)).ok).toBe(
+      true,
+    );
     // Only one dangerous role remains: the old all-bits boolean test falsely succeeded.
-    expect((await step.verify!(read(ROLE_SET_SUBREGISTRY, ROLE_SET_SUBREGISTRY, false), {} as StepCtx)).ok).toBe(false);
+    expect(
+      (
+        await step.verify!(
+          read(ROLE_SET_SUBREGISTRY, ROLE_SET_SUBREGISTRY, false),
+          {} as StepCtx,
+        )
+      ).ok,
+    ).toBe(false);
     // Another account still holds a dangerous role.
-    expect((await step.verify!(read(0n, ROLE_SET_SUBREGISTRY, false), {} as StepCtx)).ok).toBe(false);
+    expect(
+      (await step.verify!(read(0n, ROLE_SET_SUBREGISTRY, false), {} as StepCtx))
+        .ok,
+    ).toBe(false);
   });
 });
 
@@ -238,7 +319,8 @@ describe("buildSwitchResolverSteps", () => {
     const [deploy] = buildSwitchResolverSteps(params);
     const a = deploy.build({} as StepCtx);
     const b = buildSwitchResolverSteps(params)[0].build({} as StepCtx);
-    if (a.type !== "write" || b.type !== "write") throw new Error("expected writes");
+    if (a.type !== "write" || b.type !== "write")
+      throw new Error("expected writes");
     expect(a.address).toBe(deployments.VerifiableFactory);
     expect(a.functionName).toBe("deployProxy");
     expect(a.args[0]).toBe(deployments.PermissionedResolverImpl);
@@ -257,7 +339,11 @@ describe("buildSwitchResolverSteps", () => {
       return true;
     }, ctx);
     expect(good.ok).toBe(true);
-    const req = calls[0] as { address: Address; functionName: string; args: unknown[] };
+    const req = calls[0] as {
+      address: Address;
+      functionName: string;
+      args: unknown[];
+    };
     expect(req.address).toBe(SUB_RESOLVER);
     expect(req.functionName).toBe("hasRootRoles");
     expect(req.args).toEqual([ALL_ROLES, ACCOUNT]);

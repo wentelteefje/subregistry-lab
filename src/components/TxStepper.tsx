@@ -30,7 +30,11 @@ export function TxStepper({
   const failed = plan.some((s) => steps[s.id]?.status === "failed");
   return (
     <div className="flex flex-col gap-1">
-      {steps["sequence-error"]?.detail && <p role="alert" className="text-sm text-red-700">{steps["sequence-error"].detail}</p>}
+      {steps["sequence-error"]?.detail && (
+        <p role="alert" className="text-sm text-red-700">
+          {steps["sequence-error"].detail}
+        </p>
+      )}
       <ol className="flex flex-col gap-2">
         {plan.map((step, i) => {
           const state = steps[step.id];
@@ -56,9 +60,15 @@ export function TxStepper({
                   {i + 1}. {step.title}
                 </span>
                 <span className="flex items-center gap-3 text-xs">
-                  {status === "wallet" && <span className="opacity-70">confirm in wallet…</span>}
-                  {status === "mining" && <span className="opacity-70">mining…</span>}
-                  {status === "verifying" && <span className="opacity-70">verifying…</span>}
+                  {status === "wallet" && (
+                    <span className="opacity-70">confirm in wallet…</span>
+                  )}
+                  {status === "mining" && (
+                    <span className="opacity-70">mining…</span>
+                  )}
+                  {status === "verifying" && (
+                    <span className="opacity-70">verifying…</span>
+                  )}
                   {state?.txHash && (
                     <a
                       href={etherscanTx(state.txHash, network.id)}
@@ -72,6 +82,12 @@ export function TxStepper({
                 </span>
               </div>
               <p className="ml-7 mt-0.5 text-xs opacity-70">{step.explain}</p>
+              {state?.confirmed && status === "failed" && (
+                <p className="ml-7 mt-1 text-xs text-amber-800">
+                  Transaction mined; its result was not verified. Check chain
+                  state before starting another paid action.
+                </p>
+              )}
               {state?.detail && (
                 <p
                   className={`ml-7 mt-1 text-xs ${

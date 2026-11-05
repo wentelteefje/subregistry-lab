@@ -1,3 +1,4 @@
+import { useLockStatus } from "../hooks/useLockStatus";
 import { useDeployment } from "../hooks/useDeployment";
 /**
  * Advanced: irreversible lock steps for the "unruggable" setup.
@@ -6,13 +7,11 @@ import { useDeployment } from "../hooks/useDeployment";
  */
 
 import { useState } from "react";
-import { useAccount, usePublicClient, useReadContracts } from "wagmi";
+import { useAccount, usePublicClient } from "wagmi";
 import type { Abi } from "viem";
 import { registryAbi } from "../config/abis";
 
 import { classifyError } from "../lib/errors";
-import { DANGEROUS_ROOT_BITMAP } from "../lib/presets";
-import { ROLE_SET_SUBREGISTRY, adminOf } from "../lib/roles";
 import { labelhashId } from "../lib/names";
 import {
   buildLockParentLinkStep,
@@ -32,33 +31,26 @@ export function LockPanel() {
   const { address } = useAccount();
   const ready = useIsReady();
   const client = usePublicClient();
-  const { session, state, dispatch } = useLab();
+  const { session } = useLab();
   const sequence = useTxSequence("lock");
   const [confirmText, setConfirmText] = useState("");
   const [activePlan, setActivePlan] = useState<StepDef[]>([]);
   const [error, setError] = useState<string>();
 
-  const bitmap = ROLE_SET_SUBREGISTRY | adminOf(ROLE_SET_SUBREGISTRY);
-  const target = session?.addresses.userRegistry;
-  const { data: lockData, refetch: refetchLock } = useReadContracts({
-    contracts: target && session ? [
-      { address: target, abi: registryAbi, functionName: "roleCount", args: [0n] },
-      { address: target, abi: registryAbi, functionName: "isEmancipated", args: [] },
-      { address: deployments.ETHRegistry, abi: registryAbi, functionName: "roleCount", args: [labelhashId(session.parentLabel)] },
-    ] as const : [],
-    query: { enabled: Boolean(target) },
-  });
-  const rootCounts = lockData?.[0]?.result;
-  const linkCounts = lockData?.[2]?.result;
-  const registryLocked = rootCounts !== undefined && (rootCounts & (DANGEROUS_ROOT_BITMAP * 15n)) === 0n && lockData?.[1]?.result === true;
-  const linkLocked = linkCounts !== undefined && (linkCounts & (bitmap * 15n)) === 0n;
+  const {
+    registryLocked,
+    linkLocked,
+    supported,
+    loading: lockLoading,
+    refetch: refetchLock,
+  } = useLockStatus(session?.addresses.userRegistry, session?.parentLabel);
 
   if (!session || !address || !session.addresses.userRegistry) return null;
   const registry = session.addresses.userRegistry;
   const parentName = `${session.parentLabel}.eth`;
   const confirmed = confirmText.trim().toLowerCase() === parentName;
 
-  const runLock = async (plan: StepDef[], onDone: () => void) => {
+  const runLock = async (plan: StepDef[]) => {
     setError(undefined);
     sequence.reset();
     setActivePlan(plan);
@@ -70,15 +62,17 @@ export function LockPanel() {
       deployResolver: false,
       userRegistry: registry,
     };
-    const result = await sequence.run(plan, ctx);
+    await sequence.run(plan, ctx);
     void refetchLock();
-    if (result) onDone();
   };
 
   const lockRegistry = () =>
     runLock(
-      buildRevokeRegistryRolesStep({ chainId: network.id, userRegistry: registry, account: address }),
-      () => dispatch({ type: "set-locked", sessionKey: state.activeKey, patch: { registryLocked: true } }),
+      buildRevokeRegistryRolesStep({
+        chainId: network.id,
+        userRegistry: registry,
+        account: address,
+      }),
     );
 
   const lockLink = async () => {
@@ -92,12 +86,12 @@ export function LockPanel() {
         args: [labelhashId(session.parentLabel)],
       })) as bigint;
       await runLock(
-        buildLockParentLinkStep({ chainId: network.id,
+        buildLockParentLinkStep({
+          chainId: network.id,
           parentLabel: session.parentLabel,
           parentResource: resource,
           account: address,
         }),
-        () => dispatch({ type: "set-locked", sessionKey: state.activeKey, patch: { linkLocked: true } }),
       );
     } catch (err) {
       setError(classifyError(err).message);
@@ -107,7 +101,10 @@ export function LockPanel() {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm">
-        These actions remove permissions permanently for the current registration. Keep the parent .eth name renewed; expiry and re-registration can replace its subregistry. <strong>There is no undo</strong>.
+        These actions remove permissions permanently for the current
+        registration. Keep the parent .eth name renewed; expiry and
+        re-registration can replace its subregistry.{" "}
+        <strong>There is no undo</strong>.
       </p>
 
       <div className="flex flex-col gap-2 rounded-lg border border-neutral-200 p-4">
@@ -116,22 +113,26 @@ export function LockPanel() {
           {registryLocked && <Badge tone="green">done</Badge>}
         </div>
         <WarningBox>
-          After every holder revokes the listed root permissions, root accounts cannot delete, renew, re-point, or
-          upgrade anything in this registry, and the registry's parent pointer (recorded
-          during setup) is frozen. New subnames can still be registered.
+          After every holder revokes the listed root permissions, root accounts
+          cannot delete, renew, re-point, or upgrade anything in this registry,
+          and the registry's parent pointer (recorded during setup) is frozen.
+          New subnames can still be registered.
         </WarningBox>
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg border border-neutral-200 p-4">
         <div className="flex items-center justify-between">
-          <h4 className="font-medium">2. Lock your name's registry pointer (optional)</h4>
+          <h4 className="font-medium">
+            2. Lock your name's registry pointer (optional)
+          </h4>
           {linkLocked && <Badge tone="green">done</Badge>}
         </div>
         <WarningBox>
-          Irreversible: you give up the permission to change which registry {parentName}{" "}
-          points at (its subregistry pointer in the .eth registry, not the registry's own
-          parent metadata). This locks the current parent registration; it does not survive expiry and re-registration.
-          Keep the parent name renewed to preserve the link.
+          Irreversible: you give up the permission to change which registry{" "}
+          {parentName} points at (its subregistry pointer in the .eth registry,
+          not the registry's own parent metadata). This locks the current parent
+          registration; it does not survive expiry and re-registration. Keep the
+          parent name renewed to preserve the link.
         </WarningBox>
       </div>
 
@@ -149,7 +150,14 @@ export function LockPanel() {
         </label>
         <button
           type="button"
-          disabled={!ready || !confirmed || registryLocked || sequence.status === "running"}
+          disabled={
+            !supported ||
+            lockLoading ||
+            !ready ||
+            !confirmed ||
+            registryLocked ||
+            sequence.status === "running"
+          }
           onClick={lockRegistry}
           className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
         >
@@ -157,7 +165,9 @@ export function LockPanel() {
         </button>
         <button
           type="button"
-          disabled={!ready || !confirmed || linkLocked || sequence.status === "running"}
+          disabled={
+            !ready || !confirmed || linkLocked || sequence.status === "running"
+          }
           onClick={lockLink}
           className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
         >
@@ -165,6 +175,12 @@ export function LockPanel() {
         </button>
       </div>
 
+      {!supported && !lockLoading && (
+        <p className="text-sm text-amber-800">
+          This registry does not support current lock verification. Registry
+          locking is unavailable.
+        </p>
+      )}
       {error && <p className="text-sm text-red-700">{error}</p>}
       {activePlan.length > 0 && (
         <TxStepper

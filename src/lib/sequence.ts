@@ -1,19 +1,53 @@
-import type { Address, TransactionReceipt } from "viem";
-import type { StepState } from "../state/labSession";
-import { actionIntent, type ReadFn, type StepAction, type StepCtx, type StepDef } from "./steps";
+import type { TransactionReceipt } from "viem";
+import { isPendingTransaction, type StepState } from "../state/labSession";
+import {
+  actionIntent,
+  type ReadFn,
+  type StepAction,
+  type StepCtx,
+  type StepDef,
+} from "./steps";
 
+type Replacement = {
+  hash: `0x${string}`;
+  cancelled: boolean;
+  transaction?: StepState["transaction"];
+};
 export type SequenceIO = {
   read: ReadFn;
   assertIdentity: () => Promise<void>;
   send: (action: StepAction) => Promise<`0x${string}`>;
-  receipt: (hash: `0x${string}`) => Promise<TransactionReceipt>;
+  transaction?: (
+    hash: `0x${string}`,
+  ) => Promise<NonNullable<StepState["transaction"]>>;
+  receipt: (
+    hash: `0x${string}`,
+    onReplaced?: (replacement: Replacement) => void,
+  ) => Promise<TransactionReceipt>;
   getState: (id: string) => StepState | undefined;
   setState: (id: string, state: StepState) => void;
-  patch: (patch: Partial<StepCtx>, receipt: TransactionReceipt) => void;
+  patch: (patch: Partial<StepCtx>, blockNumber: bigint) => void;
 };
 
-/** Receipt-first recovery prevents a refresh or RPC failure from duplicating a write. */
-export async function executeSequence(plan: StepDef[], initial: StepCtx, io: SequenceIO): Promise<StepCtx> {
+function contextPatch(patch: Partial<StepCtx>): StepState["context"] {
+  const result: NonNullable<StepState["context"]> = {};
+  for (const key of [
+    "userRegistry",
+    "resolver",
+    "registrar",
+    "subResolver",
+  ] as const) {
+    if (patch[key]) result[key] = patch[key];
+  }
+  return result;
+}
+
+/** Confirmed results are replayed from persisted context; only unknown receipts are awaited. */
+export async function executeSequence(
+  plan: StepDef[],
+  initial: StepCtx,
+  io: SequenceIO,
+): Promise<StepCtx> {
   let ctx = { ...initial };
   for (const step of plan) {
     await io.assertIdentity();
@@ -22,65 +56,125 @@ export async function executeSequence(plan: StepDef[], initial: StepCtx, io: Seq
       continue;
     }
     const action = step.build(ctx);
-    // Salts identify individual deployments, not the user's requested operation.
-    const normalized = action.type === "write" && action.functionName === "deployProxy"
-      ? { ...action, args: [action.args[0], 0n, action.args[2]] } : action;
+    const normalized =
+      action.type === "write" && action.functionName === "deployProxy"
+        ? {
+            ...action,
+            args: [
+              action.args[0],
+              `${ctx.parentLabel}:${step.intentSeed ?? step.id}`,
+              action.args[2],
+            ],
+          }
+        : action;
     const intent = actionIntent(normalized);
     const prior = io.getState(step.id);
-    if (prior?.txHash && !prior.reverted && prior.intent !== intent && prior.status !== "done") {
-      // Time-dependent inputs (such as an absolute expiry) may change after refresh.
-      // Settle the old transaction without interpreting it as the newly requested write.
-      const receipt = await io.receipt(prior.txHash);
-      if (receipt.status === "success") {
-        if (step.onReceipt) io.patch(step.onReceipt(receipt, ctx), receipt);
-        io.setState(step.id, { ...prior, status: "done", detail: "Previous transaction confirmed; review its result before submitting another action" });
-      } else {
-        io.setState(step.id, { ...prior, status: "failed", reverted: true, detail: "Previous transaction reverted" });
-      }
-      throw new Error("Previous transaction recovered. Review its result and retry the requested action if needed.");
-    }
-    let txHash = prior?.intent === intent && !prior.reverted ? prior.txHash : undefined;
-    let reverted = false;
-    let context = prior?.intent === intent ? prior.context : undefined;
+    const changedPending = Boolean(
+      prior && isPendingTransaction(prior) && prior.intent !== intent,
+    );
+    let state: StepState =
+      prior?.intent === intent || changedPending
+        ? { ...prior!, title: prior?.title ?? step.title }
+        : {
+            status: "queued",
+            intent,
+            title: step.title,
+            capture: step.capture,
+          };
+    const publish = (patch: Partial<StepState>) => {
+      state = { ...state, ...patch };
+      io.setState(step.id, state);
+    };
     try {
-      if (!txHash && step.preflight !== false && step.verify) {
-        // Read failures must stop writes, rather than silently bypassing checks.
-        const pre = await step.verify(io.read, ctx);
-        if (pre.ok) {
-          io.setState(step.id, { status: "done", intent, detail: `Already done: ${pre.detail}` });
-          continue;
+      if (
+        state.confirmed &&
+        !state.reverted &&
+        !state.cancelled &&
+        (!step.capture || state.context?.[step.capture])
+      ) {
+        ctx = { ...ctx, ...state.context };
+        if (state.context && state.blockNumber)
+          io.patch(state.context, BigInt(state.blockNumber));
+      } else {
+        if (state.reverted || state.cancelled) {
+          state = {
+            status: "queued",
+            intent,
+            title: step.title,
+            capture: step.capture,
+          };
+        }
+        if (!state.txHash && step.preflight !== false && step.verify) {
+          const pre = await step.verify(io.read, ctx);
+          if (pre.ok) {
+            publish({ status: "done", detail: `Already done: ${pre.detail}` });
+            continue;
+          }
+        }
+        if (!state.txHash) {
+          await step.guard?.(io.read, ctx);
+          publish({ status: "wallet" });
+          await io.assertIdentity();
+          const txHash = await io.send(action);
+          publish({ status: "mining", txHash });
+          if (io.transaction) {
+            try {
+              publish({ transaction: await io.transaction(txHash) });
+            } catch {
+              /* Receipt recovery remains possible when transaction lookup lags. */
+            }
+          }
+        }
+        publish({ status: "mining" });
+        const receipt = await io.receipt(state.txHash!, (replacement) => {
+          publish({
+            txHash: replacement.hash,
+            cancelled: replacement.cancelled,
+            transaction: replacement.transaction ?? state.transaction,
+          });
+        });
+        publish({
+          confirmed: true,
+          blockNumber: receipt.blockNumber.toString(),
+          txHash: receipt.transactionHash ?? state.txHash,
+          reverted: receipt.status !== "success",
+        });
+        if (state.cancelled)
+          throw new Error(
+            "Wallet replaced or cancelled this action. Review the replacement before retrying.",
+          );
+        if (state.reverted)
+          throw new Error(
+            "Transaction reverted; retry to submit a new transaction",
+          );
+        if (step.onReceipt) {
+          const patch = contextPatch(step.onReceipt(receipt, ctx));
+          publish({ context: patch });
+          ctx = { ...ctx, ...patch };
+          io.patch(patch ?? {}, receipt.blockNumber);
+        }
+        if (changedPending) {
+          publish({
+            status: "done",
+            detail:
+              "Previous transaction confirmed; review its result before submitting a different action",
+          });
+          throw new Error(
+            "Previous transaction recovered. Review its result and retry the requested action if needed.",
+          );
         }
       }
-      if (!txHash) {
-        await step.guard?.(io.read, ctx);
-        io.setState(step.id, { status: "wallet", intent });
-        await io.assertIdentity();
-        txHash = await io.send(action);
-      }
-      io.setState(step.id, { status: "mining", intent, txHash, context });
-      const receipt = await io.receipt(txHash);
-      if (receipt.status !== "success") {
-        // An explicitly reverted transaction can be retried; a timeout cannot.
-        reverted = true;
-        throw new Error("Transaction reverted; retry to submit a new transaction");
-      }
-      if (step.onReceipt) {
-        const patch = step.onReceipt(receipt, ctx);
-        ctx = { ...ctx, ...patch };
-        if (patch.subResolver) context = { subResolver: patch.subResolver as Address };
-        io.patch(patch, receipt);
-      }
-      if (context?.subResolver) ctx.subResolver = context.subResolver;
       if (step.verify) {
-        io.setState(step.id, { status: "verifying", intent, txHash, context });
+        publish({ status: "verifying" });
         const result = await step.verify(io.read, ctx);
         if (!result.ok) throw new Error(result.detail);
-        io.setState(step.id, { status: "done", intent, txHash, context, detail: result.detail });
-      } else {
-        io.setState(step.id, { status: "done", intent, txHash, context });
-      }
+        publish({ status: "done", detail: result.detail });
+      } else publish({ status: "done" });
     } catch (error) {
-      io.setState(step.id, { status: "failed", intent, txHash, context, reverted, detail: error instanceof Error ? error.message : String(error) });
+      publish({
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }

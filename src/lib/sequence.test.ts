@@ -7,16 +7,40 @@ import type { StepState } from "../state/labSession";
 const account = "0x1111111111111111111111111111111111111111" as const;
 const hash = `0x${"ab".repeat(32)}` as const;
 const resolver = "0x2222222222222222222222222222222222222222" as const;
-const ctx: StepCtx = { account, parentLabel: "lab", ownerInitBitmap: 0n, deployResolver: true };
+const ctx: StepCtx = {
+  account,
+  parentLabel: "lab",
+  ownerInitBitmap: 0n,
+  deployResolver: true,
+};
 function fixture() {
   const states: Record<string, StepState> = {};
   const io: SequenceIO = {
-    assertIdentity: vi.fn(async () => {}), read: vi.fn(async () => 0n),
-    send: vi.fn(async () => hash), receipt: vi.fn(async () => ({ status: "success", blockNumber: 10n }) as TransactionReceipt),
-    getState: id => states[id], setState: (id, state) => { states[id] = state; }, patch: vi.fn(),
+    assertIdentity: vi.fn(async () => {}),
+    read: vi.fn(async () => 0n),
+    send: vi.fn(async () => hash),
+    receipt: vi.fn(
+      async () =>
+        ({ status: "success", blockNumber: 10n }) as TransactionReceipt,
+    ),
+    getState: (id) => states[id],
+    setState: (id, state) => {
+      states[id] = state;
+    },
+    patch: vi.fn(),
   };
-  const step: StepDef = { id: "write", title: "write", explain: "write", preflight: false,
-    build: () => ({ type: "write", address: account, abi: [], functionName: "test", args: [1n] }),
+  const step: StepDef = {
+    id: "write",
+    title: "write",
+    explain: "write",
+    preflight: false,
+    build: () => ({
+      type: "write",
+      address: account,
+      abi: [],
+      functionName: "test",
+      args: [1n],
+    }),
   };
   return { states, io, step };
 }
@@ -24,16 +48,63 @@ describe("transaction recovery", () => {
   it("recovers a pending receipt after a timeout without a second send", async () => {
     const { states, io, step } = fixture();
     vi.mocked(io.receipt).mockRejectedValueOnce(new Error("RPC timeout"));
-    await expect(executeSequence([step], ctx, io)).rejects.toThrow("RPC timeout");
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow(
+      "RPC timeout",
+    );
     expect(states.write.txHash).toBe(hash);
     await executeSequence([step], ctx, io);
     expect(io.send).toHaveBeenCalledTimes(1);
     expect(states.write.status).toBe("done");
   });
+  it("stores a speed-up replacement even when receipt waiting subsequently times out", async () => {
+    const { states, io, step } = fixture();
+    const replacement = `0x${"cd".repeat(32)}` as const;
+    io.receipt = async (_hash, onReplaced) => {
+      onReplaced?.({ hash: replacement, cancelled: false });
+      throw new Error("timeout");
+    };
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow("timeout");
+    expect(states.write.txHash).toBe(replacement);
+  });
+  it("confirmed verification failures do not remain pending and do not reread their receipts", async () => {
+    const { states, io, step } = fixture();
+    step.verify = async () => ({ ok: false, detail: "Mismatch" });
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow("Mismatch");
+    expect(states.write.confirmed).toBe(true);
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow("Mismatch");
+    expect(io.receipt).toHaveBeenCalledTimes(1);
+    expect(io.send).toHaveBeenCalledTimes(1);
+  });
+  it("distinguishes pending resolver deployments for different subnames", async () => {
+    const { io, step } = fixture();
+    step.intentSeed = "alice.lab.eth-own-resolver";
+    step.build = () => ({
+      type: "write",
+      address: account,
+      abi: [],
+      functionName: "deployProxy",
+      args: [resolver, 42n, "0x"],
+    });
+    vi.mocked(io.receipt).mockRejectedValueOnce(new Error("timeout"));
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow();
+    await expect(
+      executeSequence(
+        [{ ...step, intentSeed: "bob.lab.eth-own-resolver" }],
+        ctx,
+        io,
+      ),
+    ).rejects.toThrow("Previous transaction recovered");
+    expect(io.send).toHaveBeenCalledTimes(1);
+  });
   it("keeps a reverted hash visible while allowing a new submission", async () => {
     const { states, io, step } = fixture();
-    vi.mocked(io.receipt).mockResolvedValueOnce({status:"reverted", blockNumber:10n} as TransactionReceipt);
-    await expect(executeSequence([step], ctx, io)).rejects.toThrow("Transaction reverted");
+    vi.mocked(io.receipt).mockResolvedValueOnce({
+      status: "reverted",
+      blockNumber: 10n,
+    } as TransactionReceipt);
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow(
+      "Transaction reverted",
+    );
     expect(states.write.txHash).toBe(hash);
     expect(states.write.reverted).toBe(true);
     await executeSequence([step], ctx, io);
@@ -67,29 +138,46 @@ describe("transaction recovery", () => {
   });
   it("stops before the next transaction when account/network identity changes", async () => {
     const { io, step } = fixture();
-    vi.mocked(io.assertIdentity).mockResolvedValueOnce().mockRejectedValue(new Error("network changed"));
-    await expect(executeSequence([step], ctx, io)).rejects.toThrow("network changed");
+    vi.mocked(io.assertIdentity)
+      .mockResolvedValueOnce()
+      .mockRejectedValue(new Error("network changed"));
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow(
+      "network changed",
+    );
     expect(io.send).not.toHaveBeenCalled();
   });
   it("stops on a preflight RPC error instead of submitting a write", async () => {
     const { io, step } = fixture();
     step.preflight = true;
-    step.verify = async () => { throw new Error("RPC unavailable"); };
-    await expect(executeSequence([step], ctx, io)).rejects.toThrow("RPC unavailable");
+    step.verify = async () => {
+      throw new Error("RPC unavailable");
+    };
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow(
+      "RPC unavailable",
+    );
     expect(io.send).not.toHaveBeenCalled();
   });
   it("blocks irreversible writes when the permission guard fails", async () => {
     const { io, step } = fixture();
-    step.guard = async () => { throw new Error("Other assignees remain"); };
-    await expect(executeSequence([step], ctx, io)).rejects.toThrow("Other assignees remain");
+    step.guard = async () => {
+      throw new Error("Other assignees remain");
+    };
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow(
+      "Other assignees remain",
+    );
     expect(io.send).not.toHaveBeenCalled();
   });
   it("settles the old receipt before allowing a different operation with different arguments", async () => {
     const { io, step } = fixture();
     vi.mocked(io.receipt).mockRejectedValueOnce(new Error("timeout"));
     await expect(executeSequence([step], ctx, io)).rejects.toThrow();
-    const changed = { ...step, build: () => ({ ...step.build(ctx), args: [2n] }) };
-    await expect(executeSequence([changed], ctx, io)).rejects.toThrow("Previous transaction recovered");
+    const changed = {
+      ...step,
+      build: () => ({ ...step.build(ctx), args: [2n] }),
+    };
+    await expect(executeSequence([changed], ctx, io)).rejects.toThrow(
+      "Previous transaction recovered",
+    );
     expect(io.send).toHaveBeenCalledTimes(1);
   });
 });

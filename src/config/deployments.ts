@@ -40,7 +40,7 @@ const sepoliaDeployment = {
   "registryDeployBlock": 11820399,
   "factoryDeployBlock": 11820318,
   "logScanRpc": "https://sepolia.gateway.tenderly.co",
-  "previousRegistryImplementations": ["0x624a25d67b59d587752ebec8dded8827dae52050", "0xa80338aaa8d23831cea25e858d1774534abb0263"],
+  "previousRegistryImplementations": ["0xa80338aaa8d23831cea25e858d1774534abb0263"],
   "canMint": true
 } as const;
 

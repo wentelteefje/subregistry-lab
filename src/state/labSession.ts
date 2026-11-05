@@ -28,7 +28,24 @@ export type StepState = {
   errorKind?: string;
   intent?: string;
   reverted?: boolean;
-  context?: { subResolver?: Address };
+  confirmed?: boolean;
+  cancelled?: boolean;
+  blockNumber?: string;
+  title?: string;
+  capture?: "userRegistry" | "resolver" | "registrar" | "subResolver";
+  transaction?: {
+    nonce: number;
+    from: Address;
+    to: Address | null;
+    input: `0x${string}`;
+    value?: string;
+  };
+  context?: {
+    userRegistry?: Address;
+    resolver?: Address;
+    registrar?: Address;
+    subResolver?: Address;
+  };
 };
 
 export type SessionData = {
@@ -54,7 +71,6 @@ export type SessionData = {
   registryDeployBlock?: string;
   /** sequenceId -> stepId -> state */
   sequences: Record<string, Record<string, StepState>>;
-  locked: { registryLocked?: boolean; linkLocked?: boolean };
 };
 
 export type LabState = {
@@ -62,11 +78,19 @@ export type LabState = {
   sessions: Record<string, SessionData>;
 };
 
-export function sessionKey(wallet: string, parentLabel: string, chainId = 11155111): string {
+export function sessionKey(
+  wallet: string,
+  parentLabel: string,
+  chainId = 11155111,
+): string {
   return `${getDeployment(chainId).deploymentSet}:${wallet.toLowerCase()}:${parentLabel.toLowerCase()}`;
 }
 
-export function newSession(wallet: string, parentLabel: string, chainId = 11155111): SessionData {
+export function newSession(
+  wallet: string,
+  parentLabel: string,
+  chainId = 11155111,
+): SessionData {
   return {
     chainId,
     deploymentSet: getDeployment(chainId).deploymentSet,
@@ -75,27 +99,50 @@ export function newSession(wallet: string, parentLabel: string, chainId = 111551
     deployResolver: true,
     addresses: {},
     sequences: {},
-    locked: {},
   };
 }
 
 export type LabAction =
-  | { type: "select-name"; wallet: string; parentLabel: string; chainId?: number }
+  | {
+      type: "select-name";
+      wallet: string;
+      parentLabel: string;
+      chainId?: number;
+    }
   | { type: "set-preset"; presetId: PresetId }
   | { type: "set-deploy-resolver"; value: boolean }
   | { type: "set-subname-bitmap"; bitmap?: bigint }
   | {
       type: "set-registrar-params";
-      params?: { pricePerYear: bigint; minDuration: bigint; beneficiary: Address };
+      params?: {
+        pricePerYear: bigint;
+        minDuration: bigint;
+        beneficiary: Address;
+      };
     }
   | { type: "patch-addresses"; patch: Partial<SessionData["addresses"]> }
   | { type: "set-registry-deploy-block"; block: bigint }
   | { type: "step-state"; sequenceId: string; stepId: string; state: StepState }
   | { type: "reset-sequence"; sequenceId: string }
   | { type: "reset-setup" }
-  | { type: "set-locked"; patch: Partial<SessionData["locked"]> }
   | { type: "reset-session" }
   | { type: "deselect" };
+
+export function isPendingTransaction(step: StepState): boolean {
+  return Boolean(
+    step.txHash &&
+      !step.confirmed &&
+      !step.reverted &&
+      !step.cancelled &&
+      step.status !== "done",
+  );
+}
+
+export function hasUnfinishedSetup(session?: SessionData): boolean {
+  return Object.values(session?.sequences.setup ?? {}).some(
+    (step) => isPendingTransaction(step) || step.status === "wallet",
+  );
+}
 
 export type ScopedLabAction = LabAction & { sessionKey?: string };
 
@@ -115,9 +162,27 @@ function withActive(
 export function labReducer(state: LabState, action: ScopedLabAction): LabState {
   if (action.sessionKey && action.sessionKey !== state.activeKey) {
     if (!state.sessions[action.sessionKey]) return state;
-    const updated = labReducer({ ...state, activeKey: action.sessionKey }, { ...action, sessionKey: undefined });
+    const updated = labReducer(
+      { ...state, activeKey: action.sessionKey },
+      { ...action, sessionKey: undefined },
+    );
     return { ...updated, activeKey: state.activeKey };
   }
+  const selected = state.activeKey
+    ? state.sessions[state.activeKey]
+    : undefined;
+  if (
+    hasUnfinishedSetup(selected) &&
+    [
+      "reset-setup",
+      "reset-session",
+      "set-preset",
+      "set-registrar-params",
+      "set-deploy-resolver",
+      "set-subname-bitmap",
+    ].includes(action.type)
+  )
+    return state;
   switch (action.type) {
     case "select-name": {
       const key = sessionKey(action.wallet, action.parentLabel, action.chainId);
@@ -125,7 +190,9 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
         activeKey: key,
         sessions: {
           ...state.sessions,
-          [key]: state.sessions[key] ?? newSession(action.wallet, action.parentLabel, action.chainId),
+          [key]:
+            state.sessions[key] ??
+            newSession(action.wallet, action.parentLabel, action.chainId),
         },
       };
     }
@@ -192,13 +259,12 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
           addresses: { resolver: s.addresses.resolver },
           registryDeployBlock: undefined,
           subnameRoleBitmap: undefined,
-          locked: { ...s.locked, registryLocked: undefined },
         };
       });
-    case "set-locked":
-      return withActive(state, (s) => ({ ...s, locked: { ...s.locked, ...action.patch } }));
     case "reset-session":
-      return withActive(state, (s) => newSession(s.wallet, s.parentLabel, s.chainId));
+      return withActive(state, (s) =>
+        newSession(s.wallet, s.parentLabel, s.chainId),
+      );
     default:
       return state;
   }
@@ -211,12 +277,42 @@ export function loadState(): LabState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as LabState;
-      if (!parsed || typeof parsed.sessions !== "object" || parsed.sessions === null) return { sessions: {} };
-      const sessions = Object.fromEntries(Object.entries(parsed.sessions).filter(([key, session]) => {
-        if (!session || ![1, 11155111].includes(session.chainId) || typeof session.wallet !== "string" || typeof session.parentLabel !== "string" || !session.addresses || !session.sequences) return false;
-        return key === sessionKey(session.wallet, session.parentLabel, session.chainId) && session.deploymentSet === getDeployment(session.chainId).deploymentSet;
-      }));
-      return { sessions, activeKey: parsed.activeKey && sessions[parsed.activeKey] ? parsed.activeKey : undefined };
+      if (
+        !parsed ||
+        typeof parsed.sessions !== "object" ||
+        parsed.sessions === null
+      )
+        return { sessions: {} };
+      const sessions = Object.fromEntries(
+        Object.entries(parsed.sessions).filter(([key, session]) => {
+          if (
+            !session ||
+            ![1, 11155111].includes(session.chainId) ||
+            typeof session.wallet !== "string" ||
+            typeof session.parentLabel !== "string" ||
+            !session.addresses ||
+            !session.sequences
+          )
+            return false;
+          return (
+            key ===
+              sessionKey(
+                session.wallet,
+                session.parentLabel,
+                session.chainId,
+              ) &&
+            session.deploymentSet ===
+              getDeployment(session.chainId).deploymentSet
+          );
+        }),
+      );
+      return {
+        sessions,
+        activeKey:
+          parsed.activeKey && sessions[parsed.activeKey]
+            ? parsed.activeKey
+            : undefined,
+      };
     }
   } catch {
     // corrupt storage: start fresh

@@ -1,3 +1,4 @@
+import { hasUnfinishedSetup } from "../state/labSession";
 import { useDeployment } from "../hooks/useDeployment";
 /**
  * Step 3: show the selected name's current on-chain configuration and gate
@@ -10,7 +11,14 @@ import { useNameStatus } from "../hooks/useNameStatus";
 import { explorerName, explorerRegistry } from "../lib/links";
 import { useLab } from "../state/LabContext";
 import { RegistryHistory } from "./RegistryHistory";
-import { AddressLink, Badge, ExternalLink, NameChip, WarningBox, formatExpiry } from "./ui";
+import {
+  AddressLink,
+  Badge,
+  ExternalLink,
+  NameChip,
+  WarningBox,
+  formatExpiry,
+} from "./ui";
 
 export function SetupInspector({
   onModeChosen,
@@ -20,12 +28,14 @@ export function SetupInspector({
   const network = useDeployment();
   const { address } = useAccount();
   const { session, dispatch } = useLab();
+  const blocked = hasUnfinishedSetup(session);
   const status = useNameStatus(session?.parentLabel, address);
 
   if (!session || !address) return null;
   const name = `${session.parentLabel}.eth`;
 
-  if (status.loading) return <p className="text-sm opacity-70">Reading on-chain state…</p>;
+  if (status.loading)
+    return <p className="text-sm opacity-70">Reading on-chain state…</p>;
 
   const now = BigInt(Math.floor(Date.now() / 1000));
   const expired = status.expiry !== undefined && status.expiry <= now;
@@ -40,7 +50,11 @@ export function SetupInspector({
         <dt className="opacity-60">Expiry</dt>
         <dd>
           {formatExpiry(status.expiry)}{" "}
-          {expired ? <Badge tone="red">expired</Badge> : <Badge tone="green">active</Badge>}
+          {expired ? (
+            <Badge tone="red">expired</Badge>
+          ) : (
+            <Badge tone="green">active</Badge>
+          )}
         </dd>
         <dt className="opacity-60">Owner</dt>
         <dd>
@@ -57,20 +71,22 @@ export function SetupInspector({
         </dd>
       </dl>
 
-      <ExternalLink href={explorerRegistry(name, network.id)}>inspect registry in ENS Explorer</ExternalLink>
+      <ExternalLink href={explorerRegistry(name, network.id)}>
+        inspect registry in ENS Explorer
+      </ExternalLink>
 
       {expired && (
         <WarningBox>
-          This name is expired (or in its grace period). Renew it first, setting up subnames
-          for an expired parent won't work.
+          This name is expired (or in its grace period). Renew it first, setting
+          up subnames for an expired parent won't work.
         </WarningBox>
       )}
 
       {!expired && !status.canConfigure && (
         <WarningBox>
-          The connected wallet cannot configure this name (it lacks the "set subregistry"
-          permission). Connect the owning account, or have the owner grant this wallet the
-          role.
+          The connected wallet cannot configure this name (it lacks the "set
+          subregistry" permission). Connect the owning account, or have the
+          owner grant this wallet the role.
         </WarningBox>
       )}
 
@@ -89,7 +105,8 @@ export function SetupInspector({
           <p className="text-sm">
             This name already has a subregistry.
             {session.addresses.userRegistry?.toLowerCase() ===
-              status.subregistry?.toLowerCase() && " (This session deployed it.)"}
+              status.subregistry?.toLowerCase() &&
+              " (This session deployed it.)"}
           </p>
           <div className="flex gap-2">
             <button
@@ -109,7 +126,9 @@ export function SetupInspector({
             </button>
             <button
               type="button"
+              disabled={blocked}
               onClick={() => {
+                if (blocked) return;
                 // A replace is a fresh run: drop the previous setup's step
                 // states and deployed addresses, or the runner would replay
                 // the old run's "done" steps without sending anything.
@@ -122,9 +141,9 @@ export function SetupInspector({
             </button>
           </div>
           <p className="text-xs opacity-60">
-            Replacing points your name at a brand-new registry. Subnames in the old registry
-            stop resolving, but aren't deleted: re-linking the old registry address brings
-            them back.
+            Replacing points your name at a brand-new registry. Subnames in the
+            old registry stop resolving, but aren't deleted: re-linking the old
+            registry address brings them back.
           </p>
         </div>
       )}

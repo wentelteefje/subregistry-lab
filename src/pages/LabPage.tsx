@@ -1,3 +1,4 @@
+import { PendingTransactions } from "../components/PendingTransactions";
 import { useDeployment } from "../hooks/useDeployment";
 import { useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
@@ -32,9 +33,11 @@ function LabWorkspace() {
   const { session } = useLab();
   const [mode, setMode] = useState<SetupMode>();
   const [configured, setConfigured] = useState(false);
+  const [recoveryVersion, setRecoveryVersion] = useState(0);
   const nameStatus = useNameStatus(session?.parentLabel, address);
 
-  const showConfigure = Boolean(session) && (mode === "fresh" || mode === "replace");
+  const showConfigure =
+    Boolean(session) && (mode === "fresh" || mode === "replace");
   const showReview = showConfigure && configured;
   // On-chain truth decides: the playground is relevant whenever the name's
   // live subregistry pointer matches the session's registry. This covers
@@ -54,16 +57,25 @@ function LabWorkspace() {
             ENSv2 Subregistry Lab
           </h1>
           <p className="text-sm opacity-70">
-            Deploy and configure subname registries for your .eth names on {network.chain.name}. No code
-            required.
+            Deploy and configure subname registries for your .eth names on{" "}
+            {network.chain.name}. No code required.
           </p>
         </div>
         <ConnectButton />
       </header>
 
       <ChainGuard />
-      {network.id === 1 && <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">Mainnet ENSv2 is a prelaunch deployment. This lab uses its explicit v2 resolver; results may differ from wallets using canonical ENS. Transactions spend real ETH and USDC.</p>}
+      {network.id === 1 && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+          Mainnet ENSv2 is a prelaunch deployment. This lab uses its explicit v2
+          resolver; results may differ from wallets using canonical ENS.
+          Transactions spend real ETH and USDC.
+        </p>
+      )}
 
+      <PendingTransactions
+        onRecovered={() => setRecoveryVersion((value) => value + 1)}
+      />
       <main className="flex flex-col gap-6">
         <Section step={1} title="Connect your wallet" enabled>
           {isConnected ? (
@@ -71,7 +83,9 @@ function LabWorkspace() {
               Connected{ready ? ` and on ${network.chain.name}.` : "."}
             </p>
           ) : (
-            <p className="text-sm">Use the connect button in the top right corner.</p>
+            <p className="text-sm">
+              Use the connect button in the top right corner.
+            </p>
           )}
         </Section>
 
@@ -79,7 +93,11 @@ function LabWorkspace() {
           <NamePicker />
         </Section>
 
-        <Section step={3} title="Current setup" enabled={ready && Boolean(session)}>
+        <Section
+          step={3}
+          title="Current setup"
+          enabled={ready && Boolean(session)}
+        >
           <SetupInspector
             onModeChosen={(m) => {
               setMode(m);
@@ -97,13 +115,16 @@ function LabWorkspace() {
         {showReview && (
           <Section step={5} title="Review and execute" enabled={ready}>
             {/* keyed by preset: switching presets remounts and drops in-memory step state */}
-            <ReviewPanel key={`${session?.parentLabel}:${session?.presetId}`} onComplete={() => nameStatus.refetch()} />
+            <ReviewPanel
+              key={`${session?.parentLabel}:${session?.presetId}`}
+              onComplete={() => nameStatus.refetch()}
+            />
           </Section>
         )}
 
         {playgroundReady && (
           <Section step={showReview ? 6 : 4} title="Playground" enabled={ready}>
-            <PlaygroundPanel />
+            <PlaygroundPanel key={recoveryVersion} />
           </Section>
         )}
 

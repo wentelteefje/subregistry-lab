@@ -57,22 +57,14 @@ function LabWorkspace() {
             ENSv2 Subregistry Lab
           </h1>
           <p className="text-sm opacity-70">
-            Deploy and configure subname registries for your .eth names on{" "}
-            {network.chain.name}. No code required.
+            Deploy and configure subname registries for your .eth names. No code
+            required.
           </p>
         </div>
         <ConnectButton />
       </header>
 
       <ChainGuard />
-      {network.id === 1 && (
-        <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
-          Mainnet ENSv2 is a prelaunch deployment. This lab uses its explicit v2
-          resolver; results may differ from wallets using canonical ENS.
-          Transactions spend real ETH and USDC.
-        </p>
-      )}
-
       <PendingTransactions
         onRecovered={() => setRecoveryVersion((value) => value + 1)}
       />

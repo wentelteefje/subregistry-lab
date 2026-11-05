@@ -16,7 +16,7 @@ A browser playground for experimenting with **ENSv2 subname registry setups on S
 
 Explorer and Etherscan links follow the selected network.
 
-Mainnet uses the documented prelaunch ENSv2 deployments and its explicit Universal Resolver. Canonical Mainnet wallets still use ENSv1 until the protocol cutover; owning a v1 name does not make it available in this v2 wizard. Mainnet transactions spend real ETH and USDC.
+Mainnet uses the active ENSv2 deployments and their Universal Resolver. Mainnet transactions spend real ETH and USDC.
 
 A registry lock is verified across all root assignees. The parent-link lock applies only to its current registration: keep the parent `.eth` renewed. Standard safe transfers also require contract-level emancipation.
 

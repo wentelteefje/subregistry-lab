@@ -1,3 +1,4 @@
+import { scanRanges } from "../lib/scan";
 /**
  * Discover the registrar of a UserRegistry from chain instead of relying on
  * session memory: scan EACRolesChanged for ROOT_RESOURCE (0) grants, then
@@ -14,9 +15,9 @@ import {
   type AbiEvent,
   type Address,
 } from "viem";
-import { sepolia } from "viem/chains";
-import { registryAbi } from "../config/abis";
-import { ETH_REGISTRY_DEPLOY_BLOCK, LOG_SCAN_RPC } from "../config/deployments";
+
+import { registryAbi, simpleRegistrarAbi } from "../config/abis";
+import { useDeployment } from "./useDeployment";
 import { ROLE_REGISTRAR } from "../lib/roles";
 
 const rolesChangedEvent = (registryAbi as Abi).find(
@@ -29,10 +30,14 @@ export function useRegistrarDiscovery(
   fromBlock?: bigint,
   skip?: boolean,
 ) {
+  const network = useDeployment();
+  const deployments = network.addresses;
+  const ETH_REGISTRY_DEPLOY_BLOCK = BigInt(network.registryDeployBlock);
+  const LOG_SCAN_RPC = network.logScanRpc;
   const client = usePublicClient();
   const scanClient = useMemo(
-    () => createPublicClient({ chain: sepolia, transport: http(LOG_SCAN_RPC) }),
-    [],
+    () => createPublicClient({ chain: network.chain, transport: http(LOG_SCAN_RPC) }),
+    [network, LOG_SCAN_RPC],
   );
   const [registrar, setRegistrar] = useState<Address>();
 
@@ -49,12 +54,12 @@ export function useRegistrarDiscovery(
           fromBlock: fromBlock ?? ETH_REGISTRY_DEPLOY_BLOCK,
           toBlock: "latest",
         } as const;
+        const head = await client.getBlockNumber();
+        const query = (fromBlock: bigint, toBlock: bigint) => scanClient.getLogs({ ...params, fromBlock, toBlock });
         let logs;
-        try {
-          logs = await scanClient.getLogs(params);
-        } catch {
-          logs = await client.getLogs(params);
-        }
+        try { logs = await scanRanges(query, params.fromBlock, head, () => cancelled); }
+        catch { logs = await scanRanges((fromBlock, toBlock) => client.getLogs({ ...params, fromBlock, toBlock }), params.fromBlock, head, () => cancelled); }
+
         const accounts = [
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ...new Set(logs.map((l: any) => (l.args.account as string).toLowerCase())),
@@ -71,8 +76,15 @@ export function useRegistrarDiscovery(
           // Registrars are contracts; the owner wallet is not.
           const code = await client.getCode({ address: account });
           if (code && code !== "0x") {
-            if (!cancelled) setRegistrar(account);
-            return;
+            try {
+              const [target, token] = await Promise.all([
+                client.readContract({ address: account, abi: simpleRegistrarAbi, functionName: "REGISTRY" }),
+                client.readContract({ address: account, abi: simpleRegistrarAbi, functionName: "PAYMENT_TOKEN" }),
+              ]);
+              if (target.toLowerCase() !== registry.toLowerCase() || token.toLowerCase() !== deployments.PaymentToken.toLowerCase()) continue;
+              if (!cancelled) setRegistrar(account);
+              return;
+            } catch { /* A role-holding smart account is not necessarily a registrar. */ }
           }
         }
         if (!cancelled) setRegistrar(undefined);
@@ -85,7 +97,7 @@ export function useRegistrarDiscovery(
     return () => {
       cancelled = true;
     };
-  }, [registry, client, scanClient, fromBlock, skip]);
+  }, [registry, client, scanClient, fromBlock, skip, deployments, ETH_REGISTRY_DEPLOY_BLOCK]);
 
   return registrar;
 }

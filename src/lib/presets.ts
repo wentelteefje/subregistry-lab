@@ -46,7 +46,7 @@ export const DANGEROUS_ROOT_BITMAP = [
   ROLE_SET_PARENT,
   ROLE_REGISTER_RESERVED,
   ROLE_UPGRADE,
-].reduce((acc, role) => acc | role | adminOf(role), 0n);
+].reduce((acc, role) => acc | role | adminOf(role), ROLE_CAN_TRANSFER_ADMIN);
 
 export type LockStepId = "revoke-registry-roles" | "lock-parent-link";
 
@@ -97,7 +97,7 @@ export const PRESETS: Preset[] = [
     name: "Standard rentable",
     tagline: "Paid subnames via a registrar",
     description:
-      "Deploys the guide's SimpleSubnameRegistrar: anyone can register a subname for a yearly fee in test USDC. You stay in full control of the registry.",
+      "Deploys the guide's SimpleSubnameRegistrar: anyone can register a subname for a yearly fee in USDC. You stay in full control of the registry.",
     ownerInitBitmap: ALL_ROLES,
     registrar: {
       pricePerYear: 5_000_000n, // 5 USDC (6 decimals)
@@ -109,9 +109,9 @@ export const PRESETS: Preset[] = [
   {
     id: "unruggable",
     name: "Unruggable, unexpiring",
-    tagline: "Subnames nobody can take away",
+    tagline: "Permanent subnames while the parent is renewed",
     description:
-      "Subnames are registered with a never-expiring lifetime and minimal permissions. After setup you can irreversibly give up the roles that could delete, re-point, or expire them - including your own.",
+      "Subnames are registered with a never-expiring lifetime and minimal permissions. Keep the parent .eth name renewed. After setup you can irreversibly give up the roles that could delete, re-point, or expire them - including your own.",
     ownerInitBitmap: ALL_ROLES, // full power needed during setup; locked afterwards
     subnameDefaults: { roleBitmap: SUBNAME_MINIMAL_BITMAP, expiry: "max" },
     lockPlan: [
@@ -119,14 +119,14 @@ export const PRESETS: Preset[] = [
         id: "revoke-registry-roles",
         title: "Give up dangerous registry roles",
         warning:
-          "Irreversible: after this, nobody (including you) can delete, renew, re-point, or upgrade anything in this registry, and its parent pointer (set during setup) is frozen. New subnames can still be registered.",
+          "After all holders remove the listed root roles, root accounts cannot delete, renew, re-point, or upgrade names, and the parent metadata is frozen. New subnames can still be registered.",
         optional: false,
       },
       {
         id: "lock-parent-link",
         title: "Lock your name's registry pointer",
         warning:
-          "Irreversible: you give up the permission to change which registry your .eth name points at (the subregistry pointer in the .eth registry). You can never unlink or replace this subregistry again.",
+          "Irreversible: you give up the permission to change which registry your .eth name points at (the subregistry pointer in the .eth registry). The restriction lasts for this registration of the parent name; expiry and re-registration create new permissions.",
         optional: true,
       },
     ],

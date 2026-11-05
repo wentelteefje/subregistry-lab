@@ -1,3 +1,6 @@
+import { useResolverAccess } from "../hooks/useResolverAccess";
+import { labelhashId } from "../lib/names";
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Playground: register subnames (directly as owner, or via the paid
  * registrar), set address records, run resolve checks, and watch the live
@@ -9,8 +12,8 @@ import { useAccount, usePublicClient } from "wagmi";
 import { isAddress, zeroAddress, type Abi, type Address } from "viem";
 import { ConfigDiagram } from "../diagram";
 import type { DiagramNode } from "../diagram";
-import { simpleRegistrarAbi } from "../config/abis";
-import { deployments } from "../config/deployments";
+import { registryAbi, simpleRegistrarAbi } from "../config/abis";
+
 import { classifyResolver, toDiagram } from "../lib/diagramModel";
 import { classifyError } from "../lib/errors";
 import { fqdn, normalizeLabel, subnameNode } from "../lib/names";
@@ -38,6 +41,8 @@ import type { StepDef } from "../lib/steps";
 const YEAR = 365n * 86400n;
 
 export function PlaygroundPanel() {
+  const network = useDeployment();
+  const deployments = network.addresses;
   const { address } = useAccount();
   const ready = useIsReady();
   const client = usePublicClient();
@@ -51,6 +56,7 @@ export function PlaygroundPanel() {
     nameStatus.resolver && nameStatus.resolver !== zeroAddress
       ? nameStatus.resolver
       : undefined;
+  const canWriteRecords = useResolverAccess(resolver, address);
   const fromBlock = session?.registryDeployBlock
     ? BigInt(session.registryDeployBlock)
     : undefined;
@@ -109,6 +115,7 @@ export function PlaygroundPanel() {
     sequence.reset();
     setActivePlan(plan);
     const base: StepCtx = {
+      chainId: network.id,
       account: address,
       parentLabel: session.parentLabel,
       ownerInitBitmap: 0n,
@@ -119,10 +126,9 @@ export function PlaygroundPanel() {
       ...ctx,
     };
     const result = await sequence.run(plan, base);
-    if (result) {
-      refresh();
-      usdc.refetch();
-    }
+    refresh();
+    usdc.refetch();
+    return result;
   };
 
   const register = async () => {
@@ -146,7 +152,7 @@ export function PlaygroundPanel() {
         ? MAX_EXPIRY
         : BigInt(Math.floor(Date.now() / 1000)) + BigInt(years) * YEAR;
       await runPlan(
-        buildDirectRegisterStep({
+        buildDirectRegisterStep({ chainId: network.id,
           userRegistry: registry,
           label: cleanLabel,
           owner,
@@ -165,8 +171,10 @@ export function PlaygroundPanel() {
           functionName: "getPrice",
           args: [duration],
         })) as bigint;
+        const state = await client.readContract({ address: registry, abi: registryAbi, functionName: "getState", args: [labelhashId(cleanLabel)] });
+        if (state.status === 2 && state.latestOwner.toLowerCase() !== owner.toLowerCase()) throw new Error("Renewal keeps the existing owner; enter that address.");
         await runPlan(
-          buildRegistrarRegisterSteps({
+          buildRegistrarRegisterSteps({ chainId: network.id,
             registrar,
             userRegistry: registry,
             label: cleanLabel,
@@ -175,6 +183,8 @@ export function PlaygroundPanel() {
             duration,
             price,
             currentAllowance: usdc.allowance,
+            payer: address,
+            renewFromExpiry: state.status === 2 ? state.expiry : undefined,
           }),
         );
       } catch (err) {
@@ -184,9 +194,9 @@ export function PlaygroundPanel() {
   };
 
   const setAddrFor = async (subLabel: string) => {
-    if (!resolver) return;
+    if (!resolver || !canWriteRecords) return;
     await runPlan(
-      buildSetAddrStep({
+      buildSetAddrStep({ chainId: network.id,
         resolver,
         node: subnameNode(subLabel, parentName),
         fqdn: fqdn(subLabel, parentName),
@@ -198,7 +208,7 @@ export function PlaygroundPanel() {
   const switchResolverFor = async (subLabel: string) => {
     if (!registry || !session) return;
     await runPlan(
-      buildSwitchResolverSteps({
+      buildSwitchResolverSteps({ chainId: network.id,
         userRegistry: registry,
         parentLabel: session.parentLabel,
         label: subLabel,
@@ -358,22 +368,22 @@ export function PlaygroundPanel() {
             disabled={!ready || sequence.status === "running"}
             className="rounded-lg bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-700 disabled:opacity-40"
           >
-            Register
+            {via === "registrar" ? "Register / renew" : "Register"}
           </button>
         </div>
         {via === "registrar" && (
           <div className="flex items-center gap-3 text-sm">
             <span className="opacity-70">
-              Your test USDC: {(Number(usdc.balance) / 1e6).toFixed(2)}
+              Your USDC: {(Number(usdc.balance) / 1e6).toFixed(2)}
             </span>
-            <button
+            {network.canMint && <button
               type="button"
               disabled={!ready || sequence.status === "running"}
-              onClick={() => runPlan(buildFaucetStep({ account: address, amount: 100_000_000n }))}
+              onClick={() => runPlan(buildFaucetStep({ chainId: network.id, account: address, amount: 100_000_000n }))}
               className="rounded-lg border border-neutral-300 px-3 py-1 hover:border-neutral-600 disabled:opacity-40"
             >
               Faucet: mint 100 USDC
-            </button>
+            </button>}
           </div>
         )}
         {formError && <p className="text-sm text-red-700">{formError}</p>}
@@ -412,7 +422,7 @@ export function PlaygroundPanel() {
               <div className="flex items-center gap-2">
                 <NameChip
                   name={fqdn(sub.label, parentName)}
-                  href={explorerName(fqdn(sub.label, parentName))}
+                  href={explorerName(fqdn(sub.label, parentName), network.id)}
                 />
                 {sub.neverExpires ? (
                   <Badge tone="green">never expires</Badge>
@@ -432,7 +442,7 @@ export function PlaygroundPanel() {
                   <button
                     type="button"
                     onClick={() => setAddrFor(sub.label)}
-                    disabled={!ready || sequence.status === "running"}
+                    disabled={!canWriteRecords || !ready || sequence.status === "running"}
                     className="underline decoration-dotted underline-offset-2 disabled:opacity-40"
                   >
                     set my address
@@ -457,7 +467,7 @@ export function PlaygroundPanel() {
                 >
                   resolve check
                 </button>
-                <ExternalLink href={explorerName(fqdn(sub.label, parentName))}>
+                <ExternalLink href={explorerName(fqdn(sub.label, parentName), network.id)}>
                   explorer
                 </ExternalLink>
               </div>
@@ -476,7 +486,7 @@ export function PlaygroundPanel() {
       {/* Renew via registrar */}
       {registrar && (
         <p className="text-xs opacity-60">
-          Renewals: use "via registrar" registration on an existing name's label to extend
+          Renewals: choose "via registrar" and enter an existing name's label to extend
           it, or ask the owner to renew directly. Registry status refreshes with ↻.
         </p>
       )}
@@ -512,6 +522,7 @@ function ResolverInspector({
   subnames: Subname[];
   onClose: () => void;
 }) {
+  const network = useDeployment();
   const isShared = node.id === "resolver";
   const isOverflow = node.id === "resolver-more";
   const addr = isShared
@@ -562,13 +573,13 @@ function ResolverInspector({
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span className="opacity-60">serves:</span>
           {servesParent && (
-            <NameChip name={parentName} href={explorerName(parentName)} />
+            <NameChip name={parentName} href={explorerName(parentName, network.id)} />
           )}
           {servedSubnames.map((s) => (
             <NameChip
               key={s.label}
               name={fqdn(s.label, parentName)}
-              href={explorerName(fqdn(s.label, parentName))}
+              href={explorerName(fqdn(s.label, parentName), network.id)}
             />
           ))}
           {!servesParent && servedSubnames.length === 0 && (

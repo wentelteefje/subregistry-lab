@@ -34,7 +34,7 @@ export function ConfigurePanel({ onDone }: { onDone: () => void }) {
             <fieldset className="flex flex-wrap items-end gap-4 rounded-lg border border-neutral-200 p-4">
               <legend className="px-1 text-sm font-medium">Registrar pricing</legend>
               <label className="flex flex-col gap-1 text-sm">
-                <span className="opacity-70">Price per year (test USDC)</span>
+                <span className="opacity-70">Price per year (USDC)</span>
                 <input
                   type="number"
                   min="0"
@@ -78,7 +78,7 @@ export function ConfigurePanel({ onDone }: { onDone: () => void }) {
                 />
               </label>
               <p className="w-full text-xs opacity-60">
-                Fees go to your wallet. Anyone can pay with the free test USDC from the
+                Fees go to your wallet. Anyone can pay with the free USDC from the
                 faucet below.
               </p>
             </fieldset>

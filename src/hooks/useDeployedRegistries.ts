@@ -1,3 +1,4 @@
+import { scanRanges } from "../lib/scan";
 /**
  * Proxies the connected wallet deployed through the VerifiableFactory.
  * Provenance is on-chain: ProxyDeployed has the sender indexed, and the
@@ -12,13 +13,9 @@ import {
   type AbiEvent,
   type Address,
 } from "viem";
-import { sepolia } from "viem/chains";
+
 import { verifiableFactoryAbi } from "../config/abis";
-import {
-  ETH_REGISTRY_DEPLOY_BLOCK,
-  LOG_SCAN_RPC,
-  deployments,
-} from "../config/deployments";
+import { useDeployment } from "./useDeployment";
 import { classifyError } from "../lib/errors";
 
 export type DeployedProxy = {
@@ -35,9 +32,12 @@ const proxyDeployedEvent = (verifiableFactoryAbi as Abi).find(
 
 /** All proxies of a given implementation the wallet deployed via the factory. */
 export function useDeployedProxies(wallet?: Address, implementation?: Address) {
+  const network = useDeployment();
+  const deployments = network.addresses;
+  const LOG_SCAN_RPC = network.logScanRpc;
   const scanClient = useMemo(
-    () => createPublicClient({ chain: sepolia, transport: http(LOG_SCAN_RPC) }),
-    [],
+    () => createPublicClient({ chain: network.chain, transport: http(LOG_SCAN_RPC) }),
+    [network, LOG_SCAN_RPC],
   );
   const [proxies, setProxies] = useState<DeployedProxy[]>([]);
   const [error, setError] = useState<string>();
@@ -51,18 +51,18 @@ export function useDeployedProxies(wallet?: Address, implementation?: Address) {
 
     (async () => {
       try {
-        const logs = await scanClient.getLogs({
+        const head = await scanClient.getBlockNumber();
+        const logs = await scanRanges((fromBlock, toBlock) => scanClient.getLogs({
           address: deployments.VerifiableFactory,
           event: proxyDeployedEvent,
           args: { sender: wallet },
-          fromBlock: ETH_REGISTRY_DEPLOY_BLOCK,
-          toBlock: "latest",
-        });
+          fromBlock, toBlock,
+        }), BigInt(network.factoryDeployBlock), head, () => cancelled);
         const found = logs
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .filter((l: any) =>
-            (l.args.implementation as string).toLowerCase() ===
-            implementation.toLowerCase(),
+            [implementation, ...(implementation.toLowerCase() === deployments.UserRegistryImpl.toLowerCase() ? network.previousRegistryImplementations : [])]
+              .some(candidate => candidate.toLowerCase() === (l.args.implementation as string).toLowerCase()),
           )
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .map((l: any) => ({
@@ -85,13 +85,14 @@ export function useDeployedProxies(wallet?: Address, implementation?: Address) {
     return () => {
       cancelled = true;
     };
-  }, [wallet, implementation, scanClient, nonce]);
+  }, [wallet, implementation, scanClient, nonce, network, deployments]);
 
   return { proxies, error, refresh };
 }
 
 /** UserRegistry proxies deployed by the wallet. */
 export function useDeployedRegistries(wallet?: Address) {
+  const deployments = useDeployment().addresses;
   const { proxies, error, refresh } = useDeployedProxies(
     wallet,
     deployments.UserRegistryImpl,
@@ -101,6 +102,7 @@ export function useDeployedRegistries(wallet?: Address) {
 
 /** PermissionedResolver proxies deployed by the wallet. */
 export function useDeployedResolvers(wallet?: Address) {
+  const deployments = useDeployment().addresses;
   const { proxies, error, refresh } = useDeployedProxies(
     wallet,
     deployments.PermissionedResolverImpl,

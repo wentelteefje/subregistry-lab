@@ -1,3 +1,4 @@
+import { useAccount, useChainId } from "wagmi";
 import { Agentation } from "agentation";
 import { Route, Routes } from "react-router-dom";
 import "./App.css";
@@ -9,11 +10,13 @@ import { LabProvider } from "./state/LabContext";
  * Agentation toolbar (dev only) for visual annotations synced to the agent via MCP.
  */
 function App() {
+  const { address } = useAccount();
+  const chainId = useChainId();
   return (
     // w-full, not w-screen: 100vw includes the scrollbar -> horizontal overflow
     <div className="min-h-screen w-full">
       <LabProvider>
-        <Routes>
+        <Routes key={`${chainId}:${address}`}>
           <Route path="/" element={<LabPage />} />
         </Routes>
       </LabProvider>

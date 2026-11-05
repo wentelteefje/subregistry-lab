@@ -7,7 +7,7 @@
 import { useReadContracts } from "wagmi";
 import { zeroAddress, type Abi, type Address } from "viem";
 import { registryAbi } from "../config/abis";
-import { deployments } from "../config/deployments";
+import { useDeployment } from "./useDeployment";
 import { labelhashId } from "../lib/names";
 import { ROLE_SET_SUBREGISTRY } from "../lib/roles";
 
@@ -26,6 +26,8 @@ export type NameStatus = {
 };
 
 export function useNameStatus(parentLabel?: string, account?: Address): NameStatus {
+  const network = useDeployment();
+  const deployments = network.addresses;
   const anyId = parentLabel ? labelhashId(parentLabel) : undefined;
   const enabled = Boolean(parentLabel && account);
 
@@ -80,7 +82,7 @@ export function useNameStatus(parentLabel?: string, account?: Address): NameStat
   // calls _transferRoles in its transfer hook), but third-party grants don't,
   // and roles can be revoked, so canConfigure always comes from a live
   // hasRoles read rather than being inferred from ownership.
-  const { data: roleData } = useReadContracts({
+  const { data: roleData, refetch: refetchRoles } = useReadContracts({
     contracts:
       enabled && resource !== undefined
         ? [
@@ -105,6 +107,6 @@ export function useNameStatus(parentLabel?: string, account?: Address): NameStat
     resolver,
     canConfigure: hasRoleDirectly,
     isOwner,
-    refetch: () => void refetch(),
+    refetch: () => { void refetch(); void refetchRoles(); },
   };
 }

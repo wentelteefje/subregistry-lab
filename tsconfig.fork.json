@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": { "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.fork.tsbuildinfo" },
+  "include": ["tests/fork.integration.ts", "vitest.fork.config.ts"]
+}

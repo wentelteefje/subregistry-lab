@@ -1,3 +1,4 @@
+import { getDeployment } from "../config/deployments";
 /**
  * Lab session state: everything the app must remember across refreshes that
  * is NOT readable from the chain (which name is being worked on, addresses
@@ -25,9 +26,14 @@ export type StepState = {
   txHash?: `0x${string}`;
   detail?: string;
   errorKind?: string;
+  intent?: string;
+  reverted?: boolean;
+  context?: { subResolver?: Address };
 };
 
 export type SessionData = {
+  chainId: number;
+  deploymentSet: string;
   wallet: string;
   parentLabel: string;
   presetId?: PresetId;
@@ -56,12 +62,14 @@ export type LabState = {
   sessions: Record<string, SessionData>;
 };
 
-export function sessionKey(wallet: string, parentLabel: string): string {
-  return `${wallet.toLowerCase()}:${parentLabel.toLowerCase()}`;
+export function sessionKey(wallet: string, parentLabel: string, chainId = 11155111): string {
+  return `${getDeployment(chainId).deploymentSet}:${wallet.toLowerCase()}:${parentLabel.toLowerCase()}`;
 }
 
-export function newSession(wallet: string, parentLabel: string): SessionData {
+export function newSession(wallet: string, parentLabel: string, chainId = 11155111): SessionData {
   return {
+    chainId,
+    deploymentSet: getDeployment(chainId).deploymentSet,
     wallet: wallet.toLowerCase(),
     parentLabel: parentLabel.toLowerCase(),
     deployResolver: true,
@@ -72,7 +80,7 @@ export function newSession(wallet: string, parentLabel: string): SessionData {
 }
 
 export type LabAction =
-  | { type: "select-name"; wallet: string; parentLabel: string }
+  | { type: "select-name"; wallet: string; parentLabel: string; chainId?: number }
   | { type: "set-preset"; presetId: PresetId }
   | { type: "set-deploy-resolver"; value: boolean }
   | { type: "set-subname-bitmap"; bitmap?: bigint }
@@ -89,6 +97,8 @@ export type LabAction =
   | { type: "reset-session" }
   | { type: "deselect" };
 
+export type ScopedLabAction = LabAction & { sessionKey?: string };
+
 function withActive(
   state: LabState,
   update: (session: SessionData) => SessionData,
@@ -102,15 +112,20 @@ function withActive(
   };
 }
 
-export function labReducer(state: LabState, action: LabAction): LabState {
+export function labReducer(state: LabState, action: ScopedLabAction): LabState {
+  if (action.sessionKey && action.sessionKey !== state.activeKey) {
+    if (!state.sessions[action.sessionKey]) return state;
+    const updated = labReducer({ ...state, activeKey: action.sessionKey }, { ...action, sessionKey: undefined });
+    return { ...updated, activeKey: state.activeKey };
+  }
   switch (action.type) {
     case "select-name": {
-      const key = sessionKey(action.wallet, action.parentLabel);
+      const key = sessionKey(action.wallet, action.parentLabel, action.chainId);
       return {
         activeKey: key,
         sessions: {
           ...state.sessions,
-          [key]: state.sessions[key] ?? newSession(action.wallet, action.parentLabel),
+          [key]: state.sessions[key] ?? newSession(action.wallet, action.parentLabel, action.chainId),
         },
       };
     }
@@ -183,18 +198,26 @@ export function labReducer(state: LabState, action: LabAction): LabState {
     case "set-locked":
       return withActive(state, (s) => ({ ...s, locked: { ...s.locked, ...action.patch } }));
     case "reset-session":
-      return withActive(state, (s) => newSession(s.wallet, s.parentLabel));
+      return withActive(state, (s) => newSession(s.wallet, s.parentLabel, s.chainId));
     default:
       return state;
   }
 }
 
-const STORAGE_KEY = "subregistry-lab:sessions:v1";
+const STORAGE_KEY = "subregistry-lab:sessions:v2";
 
 export function loadState(): LabState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as LabState;
+    if (raw) {
+      const parsed = JSON.parse(raw) as LabState;
+      if (!parsed || typeof parsed.sessions !== "object" || parsed.sessions === null) return { sessions: {} };
+      const sessions = Object.fromEntries(Object.entries(parsed.sessions).filter(([key, session]) => {
+        if (!session || ![1, 11155111].includes(session.chainId) || typeof session.wallet !== "string" || typeof session.parentLabel !== "string" || !session.addresses || !session.sequences) return false;
+        return key === sessionKey(session.wallet, session.parentLabel, session.chainId) && session.deploymentSet === getDeployment(session.chainId).deploymentSet;
+      }));
+      return { sessions, activeKey: parsed.activeKey && sessions[parsed.activeKey] ? parsed.activeKey : undefined };
+    }
   } catch {
     // corrupt storage: start fresh
   }

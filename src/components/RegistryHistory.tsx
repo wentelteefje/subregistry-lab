@@ -1,3 +1,4 @@
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Registries this wallet deployed earlier (on-chain provenance via the
  * factory's ProxyDeployed logs), with one-click re-linking so older
@@ -19,9 +20,10 @@ import { AddressLink, Badge } from "./ui";
 type DeployedTarget = { address: Address; blockNumber: bigint };
 
 export function RegistryHistory() {
+  const network = useDeployment();
   const { address } = useAccount();
   const ready = useIsReady();
-  const { session, dispatch } = useLab();
+  const { session, state, dispatch } = useLab();
   const { registries, error } = useDeployedRegistries(address);
   const status = useNameStatus(session?.parentLabel, address);
   const sequence = useTxSequence("relink");
@@ -31,12 +33,13 @@ export function RegistryHistory() {
 
   const relink = async (registry: DeployedTarget) => {
     sequence.reset();
-    const plan = buildRelinkStep({
+    const plan = buildRelinkStep({ chainId: network.id,
       parentLabel: session.parentLabel,
       registry: registry.address,
     });
     setActivePlan(plan);
     const ctx: StepCtx = {
+      chainId: network.id,
       account: address,
       parentLabel: session.parentLabel,
       ownerInitBitmap: 0n,
@@ -46,8 +49,8 @@ export function RegistryHistory() {
     if (result) {
       // Adopt the re-linked registry into the session so the playground
       // (subname scans need its deploy block) points at it.
-      dispatch({ type: "patch-addresses", patch: { userRegistry: registry.address } });
-      dispatch({ type: "set-registry-deploy-block", block: registry.blockNumber });
+      dispatch({ type: "patch-addresses", sessionKey: state.activeKey, patch: { userRegistry: registry.address } });
+      dispatch({ type: "set-registry-deploy-block", sessionKey: state.activeKey, block: registry.blockNumber });
       status.refetch();
     }
   };

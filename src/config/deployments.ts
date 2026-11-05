@@ -1,37 +1,53 @@
-/**
- * ENSv2 Sepolia deployment addresses.
- *
- * Source of truth: the `sepolia-official-v1-20260525-r2` deployment set in
- * ensdomains/contracts-v2 (the same set shown on docs.ens.domains and tracked
- * by ensjs v2). Edit here when deployments move.
- * ABI artifacts: https://github.com/ensdomains/contracts-v2/tree/main/contracts/deployments/sepolia-official-v1-20260525-r2
- */
+import { mainnet, sepolia } from "viem/chains";
 
-export const deployments = {
-  ETHRegistry: "0xDEDB92913A25abE1f7BCDD85D8A344a43B398B67",
-  ETHRegistrar: "0x8c2E866B439358c41AE05De9cbE8A00BFEFafFcA",
-  StandardRentPriceOracle: "0xe19D37839F42F7d2694D8C5712f412C66A218161",
-  VerifiableFactory: "0xD2a632D8a8b67c2c4398c255CbD7aF8dd7236198",
-  UserRegistryImpl: "0x0F99e7Ea74903AfCB7224d0354fD7428A6f92917",
-  PermissionedResolverImpl: "0xdcE5205A553573FFd47629327DDdf36186022FfA",
-  MockUSDC: "0xBA11ebdB3f9a2c5946D8629517f06364E53A2E10",
-  MockDAI: "0x2922bCD677Af690fCD1eCC699519e4bfabc73ff8",
-  /** Universal Resolver for resolve checks (from the same deployment era). */
-  UniversalResolverV2: "0x2f8a180604c42457cb56c7c4f708748ff1f91df1",
+// Addresses and ABI provenance: https://docs.ens.domains/learn/deployments/
+const mainnetDeployment = {
+  "id": 1,
+  "chain": mainnet,
+  "deploymentSet": "mainnet:4f47cbcc11462fb413196e6b5c0f8090247a6c08",
+  "artifactCommit": "4f47cbcc11462fb413196e6b5c0f8090247a6c08",
+  "addresses": {
+    "ETHRegistry": "0xf60aba43e1f7f3dab1186ff03b561401c9df85e2",
+    "ETHRegistrar": "0xd6d8369e55c94ae8afa714e6cf7ab5be54d5cc81",
+    "StandardRentPriceOracle": "0x76f29609a363a8a1a2a6abe2e859c0f8916af469",
+    "VerifiableFactory": "0x77510ba162dfea3d8989e3f0928a691b345730d2",
+    "UserRegistryImpl": "0xfaa23592aca10a6d8875b18ea86954e8eb6d8d72",
+    "PermissionedResolverImpl": "0x565b0f456a04ac9b48758190e90030623cff57c5",
+    "UniversalResolverV2": "0x06fdd07f007adac667177b46ab2eb9a75132cfd5",
+    "PaymentToken": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+  },
+  "registryDeployBlock": 26105621,
+  "factoryDeployBlock": 26105299,
+  "logScanRpc": "https://ethereum-rpc.publicnode.com",
+  "previousRegistryImplementations": ["0x664814f5bd5e6e617742029fa781bbee6c230dc0", "0x75ff9adbcfce2469b097ac68f6ae650eae1351bb"],
+  "canMint": false
+} as const;
+const sepoliaDeployment = {
+  "id": 11155111,
+  "chain": sepolia,
+  "deploymentSet": "sepolia:07e55a056f5b6a9c90119f501bdd05714e67dddd",
+  "artifactCommit": "07e55a056f5b6a9c90119f501bdd05714e67dddd",
+  "addresses": {
+    "ETHRegistry": "0xd4ebcbbdf463c9c45784603db0ddd499bc44a8b4",
+    "ETHRegistrar": "0xf633e7fc17e2bbe0d0965d18ec1821dcb754a3d3",
+    "StandardRentPriceOracle": "0x8196665d4ca7488b6474a9ec8e7d2719fb42263a",
+    "VerifiableFactory": "0xda70306c98e97ece36f997a21368e53298572991",
+    "UserRegistryImpl": "0x9bd8a88719068d09ecee662f36c0e3856708366a",
+    "PermissionedResolverImpl": "0x115eb53f0c60696633855f90b138178fb40b2b2c",
+    "UniversalResolverV2": "0x24e1d8e068620b647ca097f961a61055f4f42d72",
+    "PaymentToken": "0x240b0316df57887dbbe58b586508b19e633a14aa"
+  },
+  "registryDeployBlock": 11820399,
+  "factoryDeployBlock": 11820318,
+  "logScanRpc": "https://sepolia.gateway.tenderly.co",
+  "previousRegistryImplementations": ["0x624a25d67b59d587752ebec8dded8827dae52050", "0xa80338aaa8d23831cea25e858d1774534abb0263"],
+  "canMint": true
 } as const;
 
-/** Block in which ETHRegistry was deployed; owned-name log scans start here. */
-export const ETH_REGISTRY_DEPLOY_BLOCK = 10921984n;
-
-/**
- * RPC used for log scans: Tenderly's public gateway accepts full-range
- * eth_getLogs (verified), so a whole scan is one request per event type.
- * The wagmi transports (drpc/publicnode) cap or reject historical getLogs.
- */
-export const LOG_SCAN_RPC = "https://sepolia.gateway.tenderly.co";
-
-/**
- * Chunk size for the fallback scan via the wagmi transport if the scan RPC
- * is down. drpc's free tier rejects ranges over 10000 blocks.
- */
+export const networks = { 1: mainnetDeployment, 11155111: sepoliaDeployment } as const;
+export type Deployment = (typeof networks)[keyof typeof networks];
 export const LOG_CHUNK_SIZE = 9_999n;
+export function getDeployment(chainId = 11155111): Deployment {
+  if (chainId !== 1 && chainId !== 11155111) throw new Error(`Unsupported network: ${chainId}`);
+  return networks[chainId];
+}

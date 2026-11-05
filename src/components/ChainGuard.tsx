@@ -1,39 +1,22 @@
-import { useAccount, useSwitchChain } from "wagmi";
-import { sepolia } from "wagmi/chains";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
+import { networks } from "../config/deployments";
 
-/**
- * True when the app is safe to send transactions: wallet connected + on Sepolia.
- * Every write button in the app should be gated on this.
- */
 export function useIsReady(): boolean {
   const { isConnected, chainId } = useAccount();
-  return isConnected && chainId === sepolia.id;
+  const configured = useChainId();
+  return isConnected && chainId === configured && (chainId === 1 || chainId === 11155111);
 }
 
-/**
- * Banner shown whenever the connected wallet is on the wrong network.
- * Renders nothing when disconnected (connect UI handles that) or on Sepolia.
- */
 export function ChainGuard() {
-  const { isConnected, chainId } = useAccount();
-  const { switchChain, isPending } = useSwitchChain();
-
-  if (!isConnected || chainId === sepolia.id) return null;
-
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-400 bg-amber-50 px-4 py-3 text-amber-900">
-      <span className="text-sm">
-        This lab runs on <strong>Sepolia</strong>. Your wallet is on another
-        network, so all actions are disabled.
-      </span>
-      <button
-        type="button"
-        className="shrink-0 rounded-md bg-amber-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-        disabled={isPending}
-        onClick={() => switchChain({ chainId: sepolia.id })}
-      >
-        {isPending ? "Switching…" : "Switch to Sepolia"}
-      </button>
-    </div>
-  );
+  const { isConnected, chainId: walletChain } = useAccount();
+  const configured = useChainId();
+  const chainId = configured === 1 ? 1 : 11155111;
+  const { switchChain, isPending, error } = useSwitchChain();
+  return <div className="flex flex-wrap items-center gap-3 rounded-lg border border-neutral-200 p-3">
+    <label className="text-sm">Network <select aria-label="Network" className="ml-2 rounded border p-2" value={chainId} disabled={isPending} onChange={event => switchChain({ chainId: Number(event.target.value) as 1 | 11155111 })}>
+      {Object.values(networks).map(network => <option key={network.id} value={network.id}>{network.chain.name}</option>)}
+    </select></label>
+    {isConnected && walletChain !== chainId && <span className="text-sm text-amber-800">Switch your wallet to the selected network to enable actions.</span>}
+    {error && <span className="text-sm text-red-700">{error.message}</span>}
+  </div>;
 }

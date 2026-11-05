@@ -1,3 +1,4 @@
+import { scanRanges } from "../lib/scan";
 /**
  * Subnames registered in a UserRegistry: LabelRegistered logs (full-range
  * via the scan RPC, wagmi transport as fallback), states via getState.
@@ -12,9 +13,9 @@ import {
   type AbiEvent,
   type Address,
 } from "viem";
-import { sepolia } from "viem/chains";
+
 import { registryAbi } from "../config/abis";
-import { ETH_REGISTRY_DEPLOY_BLOCK, LOG_SCAN_RPC } from "../config/deployments";
+import { useDeployment } from "./useDeployment";
 import { classifyError } from "../lib/errors";
 import { labelhashId } from "../lib/names";
 import { MAX_EXPIRY } from "../lib/presets";
@@ -34,10 +35,14 @@ const labelRegisteredEvent = (registryAbi as Abi).find(
 ) as AbiEvent;
 
 export function useRegistryState(registry?: Address, fromBlock?: bigint) {
+  const network = useDeployment();
+  const deployments = network.addresses;
+  const ETH_REGISTRY_DEPLOY_BLOCK = BigInt(network.registryDeployBlock);
+  const LOG_SCAN_RPC = network.logScanRpc;
   const client = usePublicClient();
   const scanClient = useMemo(
-    () => createPublicClient({ chain: sepolia, transport: http(LOG_SCAN_RPC) }),
-    [],
+    () => createPublicClient({ chain: network.chain, transport: http(LOG_SCAN_RPC) }),
+    [network, LOG_SCAN_RPC],
   );
   const [subnames, setSubnames] = useState<Subname[]>([]);
   const [loading, setLoading] = useState(false);
@@ -60,12 +65,12 @@ export function useRegistryState(registry?: Address, fromBlock?: bigint) {
           fromBlock: fromBlock ?? ETH_REGISTRY_DEPLOY_BLOCK,
           toBlock: "latest",
         } as const;
+        const head = await client.getBlockNumber();
+        const query = (fromBlock: bigint, toBlock: bigint) => scanClient.getLogs({ ...params, fromBlock, toBlock });
         let logs;
-        try {
-          logs = await scanClient.getLogs(params);
-        } catch {
-          logs = await client.getLogs(params);
-        }
+        try { logs = await scanRanges(query, params.fromBlock, head, () => cancelled); }
+        catch { logs = await scanRanges((fromBlock, toBlock) => client.getLogs({ ...params, fromBlock, toBlock }), params.fromBlock, head, () => cancelled); }
+
         const labels = [
           ...new Set(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -116,7 +121,7 @@ export function useRegistryState(registry?: Address, fromBlock?: bigint) {
     return () => {
       cancelled = true;
     };
-  }, [registry, client, scanClient, fromBlock, nonce]);
+  }, [registry, client, scanClient, fromBlock, nonce, network, deployments, ETH_REGISTRY_DEPLOY_BLOCK]);
 
   return { subnames, loading, error, refresh };
 }

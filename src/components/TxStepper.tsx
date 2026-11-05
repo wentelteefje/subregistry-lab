@@ -1,3 +1,4 @@
+import { useDeployment } from "../hooks/useDeployment";
 /** Renders a tx sequence: one row per step with live status + links. */
 
 import type { StepDef } from "../lib/steps";
@@ -25,9 +26,11 @@ export function TxStepper({
   running: boolean;
   onRetry?: () => void;
 }) {
+  const network = useDeployment();
   const failed = plan.some((s) => steps[s.id]?.status === "failed");
   return (
     <div className="flex flex-col gap-1">
+      {steps["sequence-error"]?.detail && <p role="alert" className="text-sm text-red-700">{steps["sequence-error"].detail}</p>}
       <ol className="flex flex-col gap-2">
         {plan.map((step, i) => {
           const state = steps[step.id];
@@ -58,7 +61,7 @@ export function TxStepper({
                   {status === "verifying" && <span className="opacity-70">verifying…</span>}
                   {state?.txHash && (
                     <a
-                      href={etherscanTx(state.txHash)}
+                      href={etherscanTx(state.txHash, network.id)}
                       target="_blank"
                       rel="noreferrer"
                       className="underline decoration-dotted"

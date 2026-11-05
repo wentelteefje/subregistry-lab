@@ -1,3 +1,4 @@
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Step 3: show the selected name's current on-chain configuration and gate
  * the rest of the wizard on the wallet actually being able to configure it.
@@ -16,6 +17,7 @@ export function SetupInspector({
 }: {
   onModeChosen: (mode: "fresh" | "adopt" | "replace") => void;
 }) {
+  const network = useDeployment();
   const { address } = useAccount();
   const { session, dispatch } = useLab();
   const status = useNameStatus(session?.parentLabel, address);
@@ -33,7 +35,7 @@ export function SetupInspector({
       <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm">
         <dt className="opacity-60">Name</dt>
         <dd>
-          <NameChip name={name} href={explorerName(name)} />
+          <NameChip name={name} href={explorerName(name, network.id)} />
         </dd>
         <dt className="opacity-60">Expiry</dt>
         <dd>
@@ -55,7 +57,7 @@ export function SetupInspector({
         </dd>
       </dl>
 
-      <ExternalLink href={explorerRegistry(name)}>inspect registry in ENS Explorer</ExternalLink>
+      <ExternalLink href={explorerRegistry(name, network.id)}>inspect registry in ENS Explorer</ExternalLink>
 
       {expired && (
         <WarningBox>

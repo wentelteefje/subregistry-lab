@@ -12,7 +12,8 @@ import {
 } from "./steps";
 import { ALL_ROLES, ROLE_SET_SUBREGISTRY, adminOf } from "./roles";
 import { labelhashId } from "./names";
-import { deployments } from "../config/deployments";
+import { getDeployment } from "../config/deployments";
+const deployments = getDeployment().addresses;
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111" as Address;
 const REGISTRY = "0x2222222222222222222222222222222222222222" as Address;
@@ -167,7 +168,7 @@ describe("action builders", () => {
     expect(action.args[5]).toBe(MAX_EXPIRY);
   });
 
-  it("registrar register inserts approve only when allowance is short", () => {
+  it("registrar approval checks live allowance rather than a stale UI value", async () => {
     const params = {
       registrar: REGISTRAR,
       userRegistry: REGISTRY,
@@ -179,9 +180,9 @@ describe("action builders", () => {
       currentAllowance: 0n,
     };
     const short = buildRegistrarRegisterSteps(params);
-    expect(short[0].skipIf!({} as StepCtx)).toBe(false);
+    expect((await short[0].verify!(async () => 0n, {} as StepCtx)).ok).toBe(false);
     const covered = buildRegistrarRegisterSteps({ ...params, currentAllowance: 5_000_000n });
-    expect(covered[0].skipIf!({} as StepCtx)).toBe(true);
+    expect((await covered[0].verify!(async () => 5_000_000n, {} as StepCtx)).ok).toBe(true);
   });
 
   it("revoke-registry-roles revokes the dangerous bitmap from the account", () => {
@@ -208,8 +209,12 @@ describe("action builders", () => {
 
   it("lock verify reports ok only when roles are gone", async () => {
     const [step] = buildRevokeRegistryRolesStep({ userRegistry: REGISTRY, account: ACCOUNT });
-    expect((await step.verify!(async () => false, {} as StepCtx)).ok).toBe(true);
-    expect((await step.verify!(async () => true, {} as StepCtx)).ok).toBe(false);
+    const read = (roles: bigint, counts: bigint, emancipated: boolean) => async ({ functionName }: { functionName: string }) => functionName === "roles" ? roles : functionName === "roleCount" ? counts : emancipated;
+    expect((await step.verify!(read(0n, 0n, true), {} as StepCtx)).ok).toBe(true);
+    // Only one dangerous role remains: the old all-bits boolean test falsely succeeded.
+    expect((await step.verify!(read(ROLE_SET_SUBREGISTRY, ROLE_SET_SUBREGISTRY, false), {} as StepCtx)).ok).toBe(false);
+    // Another account still holds a dangerous role.
+    expect((await step.verify!(read(0n, ROLE_SET_SUBREGISTRY, false), {} as StepCtx)).ok).toBe(false);
   });
 });
 

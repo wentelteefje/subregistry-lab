@@ -11,15 +11,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient } from "wagmi";
-import { createPublicClient, http, type Abi, type AbiEvent, type Address, type PublicClient } from "viem";
-import { sepolia } from "viem/chains";
+import { createPublicClient, http, type Abi, type AbiEvent, type Address, type PublicClient, parseAbi } from "viem";
+
 import { registryAbi } from "../config/abis";
-import {
-  ETH_REGISTRY_DEPLOY_BLOCK,
-  LOG_CHUNK_SIZE,
-  LOG_SCAN_RPC,
-  deployments,
-} from "../config/deployments";
+import { LOG_CHUNK_SIZE, type Deployment } from "../config/deployments";
+import { useDeployment } from "./useDeployment";
 import { classifyError } from "../lib/errors";
 import {
   cacheCandidates,
@@ -50,9 +46,9 @@ export type OwnedNamesResult = {
 
 const CACHE_PREFIX = "subregistry-lab:scan:v1:";
 
-function loadCache(wallet: string): ScanCache {
+function loadCache(wallet: string, network: Deployment): ScanCache {
   try {
-    const raw = localStorage.getItem(CACHE_PREFIX + wallet.toLowerCase());
+    const raw = localStorage.getItem(CACHE_PREFIX + network.deploymentSet + ":" + wallet.toLowerCase());
     if (raw) {
       const parsed = JSON.parse(raw) as ScanCache;
       if (parsed.version === 1) return parsed;
@@ -60,12 +56,12 @@ function loadCache(wallet: string): ScanCache {
   } catch {
     // fall through to fresh cache
   }
-  return emptyCache(wallet, ETH_REGISTRY_DEPLOY_BLOCK);
+  return emptyCache(wallet, BigInt(network.registryDeployBlock));
 }
 
-function saveCache(cache: ScanCache): void {
+function saveCache(cache: ScanCache, network: Deployment): void {
   try {
-    localStorage.setItem(CACHE_PREFIX + cache.wallet, JSON.stringify(cache));
+    localStorage.setItem(CACHE_PREFIX + network.deploymentSet + ":" + cache.wallet, JSON.stringify(cache));
   } catch {
     // non-fatal
   }
@@ -81,20 +77,21 @@ const labelRegisteredEvent = (registryAbi as Abi).find(
 /** One getLogs pass over [from, to]; throws on RPC rejection. */
 async function fetchSpan(
   client: PublicClient,
+  network: Deployment,
   wallet: Address,
   from: bigint,
   to: bigint,
 ): Promise<{ transfers: TransferSingleLike[]; labels: LabelRegisteredLike[] }> {
   const [transferLogs, labelLogs] = await Promise.all([
     client.getLogs({
-      address: deployments.ETHRegistry,
+      address: network.addresses.ETHRegistry,
       event: transferSingleEvent,
       args: { to: wallet },
       fromBlock: from,
       toBlock: to,
     }),
     client.getLogs({
-      address: deployments.ETHRegistry,
+      address: network.addresses.ETHRegistry,
       event: labelRegisteredEvent,
       fromBlock: from,
       toBlock: to,
@@ -116,17 +113,19 @@ async function fetchSpan(
 }
 
 /** Grace period is a registrar-level concept; used only for a UI hint. */
-const GRACE_SECONDS = 28n * 24n * 60n * 60n;
+const registrarGraceAbi = parseAbi(["function GRACE_PERIOD() view returns (uint64)"]);
 
 export function useOwnedNames(wallet?: Address): OwnedNamesResult {
+  const network = useDeployment();
+  const LOG_SCAN_RPC = network.logScanRpc;
   const client = usePublicClient();
   const scanClient = useMemo(
     () =>
       createPublicClient({
-        chain: sepolia,
+        chain: network.chain,
         transport: http(LOG_SCAN_RPC),
       }),
-    [],
+    [network, LOG_SCAN_RPC],
   );
   const [names, setNames] = useState<OwnedName[]>([]);
   const [loading, setLoading] = useState(false);
@@ -147,16 +146,16 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
 
     (async () => {
       try {
-        let cache = loadCache(wallet);
+        let cache = loadCache(wallet, network);
         const head = await client.getBlockNumber();
         const from = BigInt(cache.lastScannedBlock) + 1n;
 
         if (from <= head) {
           try {
             // Fast path: one full-range request per event type.
-            const span = await fetchSpan(scanClient, wallet, from, head);
+            const span = await fetchSpan(scanClient, network, wallet, from, head);
             cache = mergeCache(cache, span.transfers, span.labels, head);
-            saveCache(cache);
+            saveCache(cache, network);
             if (!cancelled) setProgress(0.9);
           } catch {
             // Fallback: chunked scan via the wagmi transport.
@@ -169,12 +168,13 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
               try {
                 const span = await fetchSpan(
                   client as PublicClient,
+                  network,
                   wallet,
                   range.fromBlock,
                   range.toBlock,
                 );
                 cache = mergeCache(cache, span.transfers, span.labels, range.toBlock);
-                saveCache(cache);
+                saveCache(cache, network);
                 index += 1;
                 if (!cancelled) setProgress(Math.min(0.9, (index / total) * 0.9));
               } catch (err) {
@@ -194,12 +194,13 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
         // Confirm current ownership + expiry on-chain for each candidate.
         // (getState carries status/expiry/latestOwner in one call; the
         // deployed registries have no getOwner view.)
+        const graceSeconds = await client.readContract({ address: network.addresses.ETHRegistrar, abi: registrarGraceAbi, functionName: "GRACE_PERIOD" });
         const candidates = cacheCandidates(cache);
         const now = BigInt(Math.floor(Date.now() / 1000));
         const confirmed: OwnedName[] = [];
         for (const candidate of candidates) {
           const state = (await client.readContract({
-            address: deployments.ETHRegistry,
+            address: network.addresses.ETHRegistry,
             abi: registryAbi as Abi,
             functionName: "getState",
             args: [labelhashId(candidate.label)],
@@ -217,7 +218,7 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
           } else if (
             state.expiry > 0n &&
             state.expiry <= now &&
-            state.expiry + GRACE_SECONDS > now
+            state.expiry + graceSeconds > now
           ) {
             // expired but within the registrar grace window: still theirs to renew
             confirmed.push({
@@ -244,7 +245,7 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
       cancelled = true;
       scanning.current = false;
     };
-  }, [wallet, client, scanClient, nonce]);
+  }, [wallet, client, scanClient, nonce, network]);
 
   return { names, loading, progress, error, refresh };
 }

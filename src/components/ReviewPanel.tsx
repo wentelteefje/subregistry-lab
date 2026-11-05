@@ -1,3 +1,4 @@
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Step 5: plain-language summary of the planned transactions plus a
  * read-only diagram of the TARGET state, then the execute stepper.
@@ -16,6 +17,7 @@ import { TxStepper } from "./TxStepper";
 import { useIsReady } from "./ChainGuard";
 
 export function ReviewPanel({ onComplete }: { onComplete: () => void }) {
+  const network = useDeployment();
   const { address } = useAccount();
   const ready = useIsReady();
   const { session } = useLab();
@@ -26,13 +28,14 @@ export function ReviewPanel({ onComplete }: { onComplete: () => void }) {
   const preset = session?.presetId ? getPreset(session.presetId) : undefined;
 
   const plan = useMemo(
-    () => (preset ? buildSetupSteps(preset) : []),
-    [preset],
+    () => (preset ? buildSetupSteps(preset, network.id) : []),
+    [preset, network.id],
   );
 
   const ctx: StepCtx | undefined = useMemo(() => {
     if (!session || !address || !preset) return undefined;
     return {
+      chainId: network.id,
       account: address,
       parentLabel: session.parentLabel,
       ownerInitBitmap: preset.ownerInitBitmap,
@@ -51,7 +54,7 @@ export function ReviewPanel({ onComplete }: { onComplete: () => void }) {
       resolver: session.addresses.resolver,
       registrar: session.addresses.registrar,
     };
-  }, [session, address, preset]);
+  }, [session, address, preset, network.id]);
 
   const targetDiagram = useMemo(() => {
     if (!session || !preset) return undefined;

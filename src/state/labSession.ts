@@ -33,6 +33,7 @@ export type StepState = {
   blockNumber?: string;
   title?: string;
   capture?: "userRegistry" | "resolver" | "registrar" | "subResolver";
+  targetName?: string;
   transaction?: {
     nonce: number;
     from: Address;
@@ -45,6 +46,7 @@ export type StepState = {
     resolver?: Address;
     registrar?: Address;
     subResolver?: Address;
+    subResolverName?: string;
   };
 };
 
@@ -67,6 +69,7 @@ export type SessionData = {
     resolver?: Address;
     registrar?: Address;
   };
+  ownResolvers?: Record<string, Address>;
   /** Block of the registry deploy tx, for cheap subname log scans. */
   registryDeployBlock?: string;
   /** sequenceId -> stepId -> state */
@@ -124,6 +127,7 @@ export type LabAction =
   | { type: "set-registry-deploy-block"; block: bigint }
   | { type: "step-state"; sequenceId: string; stepId: string; state: StepState }
   | { type: "reset-sequence"; sequenceId: string }
+  | { type: "cache-own-resolver"; name: string; address: Address }
   | { type: "reset-setup" }
   | { type: "reset-session" }
   | { type: "deselect" };
@@ -245,6 +249,14 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
         delete sequences[action.sequenceId];
         return { ...s, sequences };
       });
+    case "cache-own-resolver":
+      return withActive(state, (s) => ({
+        ...s,
+        ownResolvers: {
+          ...s.ownResolvers,
+          [action.name.toLowerCase()]: action.address,
+        },
+      }));
     case "reset-setup":
       // Fresh reconfiguration: forget the previous run's steps, the deployed
       // registry/registrar, and any custom role bitmap (the new preset's
@@ -306,6 +318,17 @@ export function loadState(): LabState {
           );
         }),
       );
+      for (const session of Object.values(sessions))
+        for (const steps of Object.values(session.sequences)) {
+          delete steps["sequence-error"];
+          for (const step of Object.values(steps)) {
+            if (step.status === "wallet" && !step.txHash) {
+              step.status = "failed";
+              step.detail =
+                "Wallet request interrupted by reload. Check wallet activity and close the old prompt before retrying.";
+            }
+          }
+        }
       return {
         sessions,
         activeKey:

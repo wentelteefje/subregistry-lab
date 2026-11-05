@@ -1,4 +1,9 @@
-import type { TransactionReceipt } from "viem";
+import {
+  encodeFunctionData,
+  encodeDeployData,
+  type Address,
+  type TransactionReceipt,
+} from "viem";
 import { isPendingTransaction, type StepState } from "../state/labSession";
 import {
   actionIntent,
@@ -16,7 +21,14 @@ type Replacement = {
 export type SequenceIO = {
   read: ReadFn;
   assertIdentity: () => Promise<void>;
-  send: (action: StepAction) => Promise<`0x${string}`>;
+  prepare?: (
+    action: StepAction,
+  ) => Promise<NonNullable<StepState["transaction"]>>;
+  send: (
+    action: StepAction,
+    transaction?: StepState["transaction"],
+  ) => Promise<`0x${string}`>;
+  verificationBlock?: (minimum: bigint) => Promise<bigint>;
   transaction?: (
     hash: `0x${string}`,
   ) => Promise<NonNullable<StepState["transaction"]>>;
@@ -29,6 +41,34 @@ export type SequenceIO = {
   patch: (patch: Partial<StepCtx>, blockNumber: bigint) => void;
 };
 
+export function prepareTransaction(
+  action: StepAction,
+  account: Address,
+  nonce: number,
+): NonNullable<StepState["transaction"]> {
+  if (!Number.isSafeInteger(nonce) || nonce < 0)
+    throw new Error("Wallet returned an invalid transaction nonce");
+  const input =
+    action.type === "write"
+      ? encodeFunctionData({
+          abi: action.abi,
+          functionName: action.functionName,
+          args: action.args as unknown[],
+        })
+      : encodeDeployData({
+          abi: action.abi,
+          bytecode: action.bytecode,
+          args: action.args as unknown[],
+        });
+  return {
+    nonce,
+    from: account,
+    to: action.type === "write" ? action.address : null,
+    input,
+    value: "0",
+  };
+}
+
 function contextPatch(patch: Partial<StepCtx>): StepState["context"] {
   const result: NonNullable<StepState["context"]> = {};
   for (const key of [
@@ -39,6 +79,7 @@ function contextPatch(patch: Partial<StepCtx>): StepState["context"] {
   ] as const) {
     if (patch[key]) result[key] = patch[key];
   }
+  if (patch.subResolverName) result.subResolverName = patch.subResolverName;
   return result;
 }
 
@@ -80,6 +121,7 @@ export async function executeSequence(
             intent,
             title: step.title,
             capture: step.capture,
+            targetName: step.targetName,
           };
     const publish = (patch: Partial<StepState>) => {
       state = { ...state, ...patch };
@@ -102,6 +144,7 @@ export async function executeSequence(
             intent,
             title: step.title,
             capture: step.capture,
+            targetName: step.targetName,
           };
         }
         if (!state.txHash && step.preflight !== false && step.verify) {
@@ -114,8 +157,9 @@ export async function executeSequence(
         if (!state.txHash) {
           await step.guard?.(io.read, ctx);
           publish({ status: "wallet" });
+          if (io.prepare) publish({ transaction: await io.prepare(action) });
           await io.assertIdentity();
-          const txHash = await io.send(action);
+          const txHash = await io.send(action, state.transaction);
           publish({ status: "mining", txHash });
           if (io.transaction) {
             try {
@@ -149,6 +193,8 @@ export async function executeSequence(
           );
         if (step.onReceipt) {
           const patch = contextPatch(step.onReceipt(receipt, ctx));
+          if (patch && state.capture === "subResolver" && state.targetName)
+            patch.subResolverName = state.targetName;
           publish({ context: patch });
           ctx = { ...ctx, ...patch };
           io.patch(patch ?? {}, receipt.blockNumber);
@@ -166,7 +212,23 @@ export async function executeSequence(
       }
       if (step.verify) {
         publish({ status: "verifying" });
-        const result = await step.verify(io.read, ctx);
+        const minimum = state.blockNumber
+          ? BigInt(state.blockNumber)
+          : undefined;
+        const blockNumber =
+          minimum === undefined
+            ? undefined
+            : ((await io.verificationBlock?.(minimum)) ?? minimum);
+        if (minimum !== undefined && blockNumber! < minimum)
+          throw new Error(
+            "Verification node is behind the transaction receipt; retry verification",
+          );
+        const read: ReadFn = (params) =>
+          io.read({
+            ...params,
+            ...(blockNumber === undefined ? {} : { blockNumber }),
+          });
+        const result = await step.verify(read, ctx);
         if (!result.ok) throw new Error(result.detail);
         publish({ status: "done", detail: result.detail });
       } else publish({ status: "done" });

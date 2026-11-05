@@ -96,6 +96,38 @@ describe("transaction recovery", () => {
     ).rejects.toThrow("Previous transaction recovered");
     expect(io.send).toHaveBeenCalledTimes(1);
   });
+  it("archives a recovered deployment under its original subname when the requested target changed", async () => {
+    const { states, io, step } = fixture();
+    step.capture = "subResolver";
+    step.targetName = "alice.lab.eth";
+    step.intentSeed = "alice.lab.eth";
+    step.build = () => ({
+      type: "write",
+      address: account,
+      abi: [],
+      functionName: "deployProxy",
+      args: [resolver, 1n, "0x"],
+    });
+    step.onReceipt = () => ({
+      subResolver: resolver,
+      subResolverName: "alice.lab.eth",
+    });
+    vi.mocked(io.receipt).mockRejectedValueOnce(new Error("timeout"));
+    await expect(executeSequence([step], ctx, io)).rejects.toThrow();
+    const bob = {
+      ...step,
+      targetName: "bob.lab.eth",
+      intentSeed: "bob.lab.eth",
+      onReceipt: () => ({
+        subResolver: resolver,
+        subResolverName: "bob.lab.eth",
+      }),
+    };
+    await expect(executeSequence([bob], ctx, io)).rejects.toThrow(
+      "Previous transaction recovered",
+    );
+    expect(states.write.context?.subResolverName).toBe("alice.lab.eth");
+  });
   it("keeps a reverted hash visible while allowing a new submission", async () => {
     const { states, io, step } = fixture();
     vi.mocked(io.receipt).mockResolvedValueOnce({

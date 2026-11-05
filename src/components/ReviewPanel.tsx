@@ -62,7 +62,9 @@ export function ReviewPanel({ onComplete }: { onComplete: () => void }) {
       parentName: `${session.parentLabel}.eth`,
       parentOwner: address,
       userRegistry: session.addresses.userRegistry ?? "new",
-      registrar: preset.registrar ? (session.addresses.registrar ?? "new") : undefined,
+      registrar: preset.registrar
+        ? (session.addresses.registrar ?? "new")
+        : undefined,
       registrarRoles: preset.registrar?.grantBitmap,
       resolver: session.deployResolver
         ? (session.addresses.resolver ?? "new")
@@ -93,8 +95,9 @@ export function ReviewPanel({ onComplete }: { onComplete: () => void }) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm">
-        <strong>{preset.name}</strong> for <strong>{session.parentLabel}.eth</strong>: the
-        app will send {visiblePlan.length} transaction{visiblePlan.length === 1 ? "" : "s"}.
+        <strong>{preset.name}</strong> for{" "}
+        <strong>{session.parentLabel}.eth</strong>: the app will send{" "}
+        {visiblePlan.length} transaction{visiblePlan.length === 1 ? "" : "s"}.
         Your wallet asks for confirmation before each one.
       </p>
 
@@ -123,6 +126,7 @@ export function ReviewPanel({ onComplete }: { onComplete: () => void }) {
         <TxStepper
           plan={visiblePlan}
           steps={sequence.steps}
+          error={sequence.error}
           running={running}
           onRetry={start}
         />

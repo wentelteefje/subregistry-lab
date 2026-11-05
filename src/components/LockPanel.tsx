@@ -186,6 +186,7 @@ export function LockPanel() {
         <TxStepper
           plan={activePlan}
           steps={sequence.steps}
+          error={sequence.error}
           running={sequence.status === "running"}
         />
       )}

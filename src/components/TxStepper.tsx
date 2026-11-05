@@ -20,19 +20,21 @@ export function TxStepper({
   steps,
   running,
   onRetry,
+  error,
 }: {
   plan: StepDef[];
   steps: Record<string, StepState>;
   running: boolean;
   onRetry?: () => void;
+  error?: string;
 }) {
   const network = useDeployment();
   const failed = plan.some((s) => steps[s.id]?.status === "failed");
   return (
     <div className="flex flex-col gap-1">
-      {steps["sequence-error"]?.detail && (
+      {error && (
         <p role="alert" className="text-sm text-red-700">
-          {steps["sequence-error"].detail}
+          {error}
         </p>
       )}
       <ol className="flex flex-col gap-2">

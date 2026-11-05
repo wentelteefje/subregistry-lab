@@ -16,12 +16,14 @@ const harness = vi.hoisted(() => ({
   client: {
     chain: { id: 1 },
     readContract: vi.fn(),
+    getBlockNumber: vi.fn(),
     simulateContract: vi.fn(),
     getTransaction: vi.fn(),
     waitForTransactionReceipt: vi.fn(),
   },
   wallet: {
     getChainId: vi.fn(),
+    request: vi.fn(),
     writeContract: vi.fn(),
     deployContract: vi.fn(),
   },
@@ -84,7 +86,15 @@ const step = (id: string): StepDef => ({
   build: () => ({
     type: "write",
     address: account,
-    abi: [],
+    abi: [
+      {
+        type: "function",
+        name: id,
+        stateMutability: "nonpayable",
+        inputs: [],
+        outputs: [],
+      },
+    ],
     functionName: id,
     args: [],
   }),
@@ -112,6 +122,8 @@ beforeEach(() => {
     { type: "select-name", wallet: account, parentLabel: "lab", chainId: 1 },
   );
   harness.client.readContract.mockReset().mockResolvedValue(0n);
+  harness.client.getBlockNumber.mockReset().mockResolvedValue(12n);
+  harness.wallet.request.mockReset().mockResolvedValue("0x5");
   harness.client.simulateContract
     .mockReset()
     .mockImplementation(async (request) => ({ request }));
@@ -128,6 +140,65 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
 });
 describe("useTxSequence lifecycle", () => {
+  it("persists and enforces the nonce before a private transaction is sent", async () => {
+    harness.client.getTransaction.mockRejectedValue(new Error("not public"));
+    harness.client.waitForTransactionReceipt.mockRejectedValueOnce(
+      new Error("timeout"),
+    );
+    await mount();
+    await act(async () => {
+      await current.run([step("private")], ctx);
+    });
+    expect(current.steps.private.transaction?.nonce).toBe(5);
+    expect(current.steps.private.transaction?.input).toMatch(/^0x/);
+    expect(harness.wallet.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ nonce: 5 }),
+    );
+  });
+  it("pins post-receipt reads so a lagging latest response cannot report failure", async () => {
+    harness.client.readContract.mockImplementation(async ({ blockNumber }) =>
+      blockNumber === 12n ? 1n : 0n,
+    );
+    await mount();
+    const plan = {
+      ...step("pinned"),
+      verify: async (read: import("../lib/steps").ReadFn) => ({
+        ok:
+          (await read({
+            address: account,
+            abi: [],
+            functionName: "value",
+            args: [],
+          })) === 1n,
+        detail: "verified",
+      }),
+    };
+    await act(async () => {
+      await current.run([plan], ctx);
+    });
+    expect(current.status).toBe("done");
+    expect(harness.client.readContract).toHaveBeenCalledWith(
+      expect.objectContaining({ blockNumber: 12n }),
+    );
+  });
+  it("retains a confirmed verification failure for a same-intent retry without another send", async () => {
+    await mount();
+    let ok = false;
+    const plan = {
+      ...step("retry"),
+      verify: async () => ({ ok, detail: "verify" }),
+    };
+    await act(async () => {
+      await current.run([plan], ctx);
+    });
+    ok = true;
+    await act(async () => {
+      current.reset();
+      await current.run([plan], ctx);
+    });
+    expect(harness.wallet.writeContract).toHaveBeenCalledTimes(1);
+    expect(current.status).toBe("done");
+  });
   it("reset and run in the same event submits a second intentional action", async () => {
     await mount();
     await act(async () => {

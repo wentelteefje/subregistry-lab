@@ -44,7 +44,20 @@ export function PendingTransactions({
                   onRecovered?.();
                 }
                 if (result.context) {
-                  const { userRegistry, resolver, registrar } = result.context;
+                  const {
+                    userRegistry,
+                    resolver,
+                    registrar,
+                    subResolver,
+                    subResolverName,
+                  } = result.context;
+                  if (subResolver && subResolverName)
+                    dispatch({
+                      type: "cache-own-resolver",
+                      sessionKey: state.activeKey,
+                      name: subResolverName,
+                      address: subResolver,
+                    });
                   const addresses = Object.fromEntries(
                     Object.entries({
                       userRegistry,

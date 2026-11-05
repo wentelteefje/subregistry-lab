@@ -64,6 +64,7 @@ export type ReadFn = (params: {
   abi: Abi;
   functionName: string;
   args: readonly unknown[];
+  blockNumber?: bigint;
 }) => Promise<unknown>;
 
 export type StepCtx = {
@@ -83,8 +84,9 @@ export type StepCtx = {
   userRegistry?: Address;
   resolver?: Address;
   registrar?: Address;
-  /** A subname's OWN resolver (switch flow); deliberately not persisted to the session. */
+  /** A subname's own resolver, cached by full name for switch-flow recovery. */
   subResolver?: Address;
+  subResolverName?: string;
 };
 
 export type StepDef = {
@@ -97,6 +99,7 @@ export type StepDef = {
   onReceipt?: (receipt: TransactionReceipt, ctx: StepCtx) => Partial<StepCtx>;
   preflight?: boolean;
   intentSeed?: string;
+  targetName?: string;
   capture?: "userRegistry" | "resolver" | "registrar" | "subResolver";
   guard?: (read: ReadFn, ctx: StepCtx) => Promise<void>;
   verify?: (
@@ -742,6 +745,7 @@ export function buildSwitchResolverSteps(params: {
       id: "deploy-sub-resolver",
       capture: "subResolver",
       intentSeed: fqdnStr,
+      targetName: fqdnStr,
       title: `Deploy an own resolver for ${fqdnStr}`,
       explain: "Creates a fresh resolver administered by the subname's owner.",
       build: () => ({
@@ -759,7 +763,10 @@ export function buildSwitchResolverSteps(params: {
           }),
         ],
       }),
-      onReceipt: (receipt) => ({ subResolver: parseProxyAddress(receipt) }),
+      onReceipt: (receipt) => ({
+        subResolver: parseProxyAddress(receipt),
+        subResolverName: fqdnStr,
+      }),
       verify: async (read, ctx) => {
         if (!ctx.subResolver)
           return { ok: false, detail: "No resolver address captured" };

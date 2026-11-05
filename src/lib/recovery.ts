@@ -55,7 +55,12 @@ function settled(
       throw new Error(
         "The recovered transaction did not deploy the expected implementation",
       );
-    result.context = { [capture]: log.args.proxyAddress };
+    result.context = {
+      [capture]: log.args.proxyAddress,
+      ...(capture === "subResolver" && state.targetName
+        ? { subResolverName: state.targetName }
+        : {}),
+    };
   }
   return {
     ...result,

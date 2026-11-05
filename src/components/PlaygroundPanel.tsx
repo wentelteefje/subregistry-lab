@@ -1,3 +1,4 @@
+import { paidOperationExpiry } from "../lib/registration";
 import { useLockStatus } from "../hooks/useLockStatus";
 import { useResolverAccess } from "../hooks/useResolverAccess";
 import { labelhashId } from "../lib/names";
@@ -33,7 +34,7 @@ import { useRegistryState, type Subname } from "../hooks/useRegistryState";
 import { useTxSequence } from "../hooks/useTxSequence";
 import { useUsdc } from "../hooks/useUsdc";
 import { useLab } from "../state/LabContext";
-import { explorerName } from "../lib/links";
+import { etherscanTx, explorerName } from "../lib/links";
 import { useIsReady } from "./ChainGuard";
 import { TxStepper } from "./TxStepper";
 import {
@@ -90,6 +91,16 @@ export function PlaygroundPanel() {
   // null = follow the preset default ('max' expiry presets start ticked)
   const [foreverOverride, setForeverOverride] = useState<boolean | null>(null);
   const [via, setVia] = useState<"direct" | "registrar">("direct");
+  const [paidOperation, setPaidOperation] = useState<"register" | "renew">(
+    "register",
+  );
+  const [acknowledgePayment, setAcknowledgePayment] = useState(false);
+  const failedPayment = session?.sequences.playground?.["registrar-register"];
+  const unverifiedPayment =
+    failedPayment?.confirmed &&
+    failedPayment.status === "failed" &&
+    !failedPayment.reverted &&
+    !failedPayment.cancelled;
   const [formError, setFormError] = useState<string>();
   const [resolveResults, setResolveResults] = useState<Record<string, string>>(
     {},
@@ -133,7 +144,11 @@ export function PlaygroundPanel() {
   if (!session || !address || !registry) return null;
 
   const runPlan = async (plan: StepDef[], ctx?: Partial<StepCtx>) => {
-    sequence.reset();
+    const isPayment = plan.some((step) => step.id === "registrar-register");
+    sequence.reset({
+      acknowledgeConfirmedFailure: isPayment && acknowledgePayment,
+    });
+    if (isPayment) setAcknowledgePayment(false);
     setActivePlan(plan);
     const base: StepCtx = {
       chainId: network.id,
@@ -186,6 +201,10 @@ export function PlaygroundPanel() {
     } else {
       if (!registrar || !client) return;
       try {
+        if (unverifiedPayment && !acknowledgePayment)
+          throw new Error(
+            "Check the previous confirmed payment and acknowledge it before starting another paid action",
+          );
         const duration = BigInt(years) * YEAR;
         const price = (await client.readContract({
           address: registrar,
@@ -199,8 +218,13 @@ export function PlaygroundPanel() {
           functionName: "getState",
           args: [labelhashId(cleanLabel)],
         });
+        const renewFromExpiry = paidOperationExpiry(
+          paidOperation,
+          state.status,
+          state.expiry,
+        );
         if (
-          state.status === 2 &&
+          paidOperation === "renew" &&
           state.latestOwner.toLowerCase() !== owner.toLowerCase()
         )
           throw new Error(
@@ -218,7 +242,7 @@ export function PlaygroundPanel() {
             price,
             currentAllowance: usdc.allowance,
             payer: address,
-            renewFromExpiry: state.status === 2 ? state.expiry : undefined,
+            renewFromExpiry,
           }),
         );
       } catch (err) {
@@ -242,6 +266,7 @@ export function PlaygroundPanel() {
 
   const switchResolverFor = async (subLabel: string) => {
     if (!registry || !session) return;
+    const name = fqdn(subLabel, parentName);
     await runPlan(
       buildSwitchResolverSteps({
         chainId: network.id,
@@ -250,6 +275,10 @@ export function PlaygroundPanel() {
         label: subLabel,
         owner: address,
       }),
+      {
+        subResolver: session.ownResolvers?.[name.toLowerCase()],
+        subResolverName: name,
+      },
     );
   };
 
@@ -352,6 +381,48 @@ export function PlaygroundPanel() {
             </button>
           </div>
         )}
+        {via === "registrar" && (
+          <label className="text-sm">
+            Paid action{" "}
+            <select
+              aria-label="Paid action"
+              className="ml-2 rounded border p-2"
+              value={paidOperation}
+              onChange={(event) =>
+                setPaidOperation(event.target.value as "register" | "renew")
+              }
+            >
+              <option value="register">Register a new subname</option>
+              <option value="renew">Renew an existing subname</option>
+            </select>
+          </label>
+        )}
+        {via === "registrar" && unverifiedPayment && (
+          <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+            <p>
+              The previous payment was confirmed, but its result was not
+              verified. Check it before paying again.
+            </p>
+            {failedPayment.txHash && (
+              <ExternalLink
+                href={etherscanTx(failedPayment.txHash, network.id)}
+              >
+                View previous payment
+              </ExternalLink>
+            )}
+            <label className="mt-2 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={acknowledgePayment}
+                onChange={(event) =>
+                  setAcknowledgePayment(event.target.checked)
+                }
+              />
+              I checked the previous payment and want to start another paid
+              transaction.
+            </label>
+          </div>
+        )}
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-sm">
             <span className="opacity-70">Label</span>
@@ -407,7 +478,9 @@ export function PlaygroundPanel() {
             disabled={!ready || sequence.status === "running"}
             className="rounded-lg bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-700 disabled:opacity-40"
           >
-            {via === "registrar" ? "Register / renew" : "Register"}
+            {via === "registrar" && paidOperation === "renew"
+              ? "Renew"
+              : "Register"}
           </button>
         </div>
         {via === "registrar" && (
@@ -440,6 +513,7 @@ export function PlaygroundPanel() {
           <TxStepper
             plan={activePlan}
             steps={sequence.steps}
+            error={sequence.error}
             running={sequence.status === "running"}
           />
         )}
@@ -545,9 +619,9 @@ export function PlaygroundPanel() {
       {/* Renew via registrar */}
       {registrar && (
         <p className="text-xs opacity-60">
-          Renewals: choose "via registrar" and enter an existing name's label to
-          extend it, or ask the owner to renew directly. Registry status
-          refreshes with ↻.
+          Renewals: choose "via registrar", select "Renew an existing subname",
+          and enter its label to extend it, or ask the owner to renew directly.
+          Registry status refreshes with ↻.
         </p>
       )}
 

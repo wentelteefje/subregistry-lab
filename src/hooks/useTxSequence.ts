@@ -1,3 +1,4 @@
+import { getTransactionCount } from "viem/actions";
 import {
   useCallback,
   useEffect,
@@ -11,7 +12,7 @@ import type { Address } from "viem";
 import { wagmiConfig } from "../wagmiConfig";
 import { classifyError } from "../lib/errors";
 import type { StepCtx, StepDef } from "../lib/steps";
-import { executeSequence } from "../lib/sequence";
+import { executeSequence, prepareTransaction } from "../lib/sequence";
 import { acquireRun, isRunning, subscribeRuns } from "../lib/inflight";
 import { useLab } from "../state/LabContext";
 import { isPendingTransaction, type StepState } from "../state/labSession";
@@ -21,7 +22,8 @@ export type SequenceHandle = {
   status: SequenceStatus;
   steps: Record<string, StepState>;
   run: (plan: StepDef[], ctx: StepCtx) => Promise<StepCtx | undefined>;
-  reset: () => void;
+  reset: (options?: { acknowledgeConfirmedFailure?: boolean }) => void;
+  error?: string;
 };
 
 export function useTxSequence(sequenceId: string): SequenceHandle {
@@ -30,7 +32,12 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
   const { session, state, dispatch, getState } = useLab();
   const scope = state.activeKey;
   const runKey = `${scope}:${sequenceId}`;
-  const busy = useSyncExternalStore(subscribeRuns, () => isRunning(runKey));
+  const senderKey = `sender:${session?.chainId}:${session?.wallet}`;
+  const busy = useSyncExternalStore(
+    subscribeRuns,
+    () => isRunning(runKey) || isRunning(senderKey),
+  );
+  const [error, setError] = useState<string>();
   const [status, setStatus] = useState<SequenceStatus>("idle");
   const lifetime = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -55,26 +62,42 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
     },
     [dispatch, scope, sequenceId],
   );
-  const reset = useCallback(() => {
-    if (isRunning(runKey)) return;
-    const steps = getSteps();
-    const retained = Object.entries(steps).filter(
-      ([, step]) =>
-        isPendingTransaction(step) ||
-        (step.capture === "subResolver" &&
-          step.confirmed &&
-          !steps["set-sub-resolver"]?.confirmed),
-    );
-    dispatch({ type: "reset-sequence", sequenceId, sessionKey: scope });
-    for (const [id, step] of retained) setStep(id, step);
-    setStatus("idle");
-  }, [dispatch, scope, sequenceId, runKey, getSteps, setStep]);
+  const reset = useCallback(
+    (options?: { acknowledgeConfirmedFailure?: boolean }) => {
+      if (isRunning(runKey) || isRunning(senderKey)) return;
+      const steps = getSteps();
+      const retained = Object.entries(steps).filter(
+        ([, step]) =>
+          isPendingTransaction(step) ||
+          (step.confirmed &&
+            step.status === "failed" &&
+            !step.reverted &&
+            !step.cancelled &&
+            !options?.acknowledgeConfirmedFailure) ||
+          (step.capture === "subResolver" &&
+            step.confirmed &&
+            !steps["set-sub-resolver"]?.confirmed),
+      );
+      dispatch({ type: "reset-sequence", sequenceId, sessionKey: scope });
+      for (const [id, step] of retained) setStep(id, step);
+      setStatus("idle");
+    },
+    [dispatch, scope, sequenceId, runKey, senderKey, getSteps, setStep],
+  );
 
   const run = useCallback(
     async (plan: StepDef[], ctx: StepCtx) => {
       if (!session || !scope || !publicClient || !walletClient) return;
+      setError(undefined);
       const release = acquireRun(runKey);
-      if (!release) return;
+      const releaseSender = release ? acquireRun(senderKey) : undefined;
+      if (!release || !releaseSender) {
+        release?.();
+        setError(
+          "Another transaction flow is active. Wait for it to finish before resuming.",
+        );
+        return;
+      }
       const signal = lifetime.current?.signal;
       setStatus("running");
       const chainId = session.chainId;
@@ -107,7 +130,6 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
           throw new Error("Wallet network changed");
       };
       try {
-        setStep("sequence-error", { status: "queued" });
         const stranded = Object.entries(getSteps()).some(
           ([id, step]) =>
             isPendingTransaction(step) &&
@@ -123,7 +145,29 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
             publicClient.readContract({ ...p, args: p.args as unknown[] }),
           getState: (id) => getSteps()[id],
           setState: setStep,
-          send: async (action) => {
+          prepare: async (action) => {
+            await assertIdentity();
+            const nonce = await getTransactionCount(walletClient, {
+              address: account,
+              blockTag: "pending",
+            });
+            await assertIdentity();
+            return prepareTransaction(action, account, nonce);
+          },
+          verificationBlock: async (minimum) => {
+            for (let attempt = 0; attempt < 6; attempt++) {
+              await assertIdentity();
+              const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+              if (head >= minimum) return head;
+              await new Promise((resolve) =>
+                setTimeout(resolve, 200 * (attempt + 1)),
+              );
+            }
+            throw new Error(
+              "The RPC is behind the mined transaction. Retry verification without paying again.",
+            );
+          },
+          send: async (action, transaction) => {
             await assertIdentity();
             if (action.type === "deploy")
               return walletClient.deployContract({
@@ -131,6 +175,7 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
                 bytecode: action.bytecode,
                 account,
                 chain: publicClient.chain,
+                nonce: transaction?.nonce,
                 args: action.args as unknown[],
               });
             const { request } = await publicClient.simulateContract({
@@ -144,6 +189,7 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
             return walletClient.writeContract({
               ...request,
               chain: publicClient.chain,
+              nonce: transaction?.nonce,
             });
           },
           transaction: async (hash) => {
@@ -179,6 +225,13 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
             if (patch.userRegistry) addresses.userRegistry = patch.userRegistry;
             if (patch.resolver) addresses.resolver = patch.resolver;
             if (patch.registrar) addresses.registrar = patch.registrar;
+            if (patch.subResolver && patch.subResolverName)
+              dispatch({
+                type: "cache-own-resolver",
+                sessionKey: scope,
+                name: patch.subResolverName,
+                address: patch.subResolver,
+              });
             if (Object.keys(addresses).length)
               dispatch({
                 type: "patch-addresses",
@@ -197,12 +250,10 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
         setStatus("done");
         return result;
       } catch (error) {
-        setStep("sequence-error", {
-          status: "failed",
-          detail: classifyError(error).message,
-        });
+        setError(classifyError(error).message);
         setStatus("failed");
       } finally {
+        releaseSender();
         release();
       }
     },
@@ -216,6 +267,7 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
       getState,
       getSteps,
       runKey,
+      senderKey,
     ],
   );
   return {
@@ -223,5 +275,6 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
     steps: session?.sequences[sequenceId] ?? {},
     run,
     reset,
+    error,
   };
 }

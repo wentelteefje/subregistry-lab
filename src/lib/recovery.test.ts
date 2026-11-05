@@ -28,6 +28,12 @@ function fixture() {
   } satisfies RecoveryIO;
 }
 describe("recovery of a missing or replaced hash", () => {
+  it("recovers a private transaction using pre-send metadata without fetching the original hash", async () => {
+    const io = fixture();
+    await recoverPending(step, replacement, account, getDeployment(), io);
+    expect(io.transaction).toHaveBeenCalledTimes(1);
+    expect(io.transaction).toHaveBeenCalledWith(replacement);
+  });
   it("recovers a mined speed-up with identical calldata", async () => {
     const result = await recoverPending(
       step,

@@ -26,7 +26,7 @@ import {
   type StepDef,
 } from "../src/lib/steps";
 import { recoverPending } from "../src/lib/recovery";
-import { executeSequence } from "../src/lib/sequence";
+import { executeSequence, prepareTransaction } from "../src/lib/sequence";
 import { ALL_ROLES, ROLE_REGISTRAR, ROLE_RENEW } from "../src/lib/roles";
 import { MAX_EXPIRY, SUBNAME_OWNER_BITMAP } from "../src/lib/presets";
 import { labelhashId } from "../src/lib/names";
@@ -80,7 +80,20 @@ for (const chainId of [1, 11155111])
           states[id] = value;
         },
         patch: () => {},
-        send: async (action) => {
+        prepare: async (action) =>
+          prepareTransaction(
+            action,
+            account.address,
+            await client.getTransactionCount({
+              address: account.address,
+              blockTag: "pending",
+            }),
+          ),
+        verificationBlock: async (minimum) => {
+          const head = await client.getBlockNumber({ cacheTime: 0 });
+          return head > minimum ? head : minimum;
+        },
+        send: async (action, transaction) => {
           if (action.type === "deploy")
             return wallet.deployContract({
               abi: action.abi,
@@ -94,7 +107,10 @@ for (const chainId of [1, 11155111])
             functionName: action.functionName,
             args: action.args as unknown[],
           });
-          return wallet.writeContract(request);
+          return wallet.writeContract({
+            ...request,
+            nonce: transaction?.nonce,
+          });
         },
         receipt: (hash) => {
           if (interrupt) throw new Error("Simulated refresh after submission");
@@ -338,6 +354,24 @@ for (const chainId of [1, 11155111])
         }),
       );
       expect(result.subResolver).toBeDefined();
+      expect(result.subResolverName).toBe(`alice.${label}.eth`);
+      const head = await client.getBlockNumber({ cacheTime: 0 });
+      const reused = await run(
+        buildSwitchResolverSteps({
+          chainId,
+          userRegistry: ctx.userRegistry!,
+          parentLabel: label,
+          label: "alice",
+          owner: account.address,
+        }),
+        {
+          ...ctx,
+          subResolver: result.subResolver,
+          subResolverName: result.subResolverName,
+        },
+      );
+      expect(reused.subResolver).toBe(result.subResolver);
+      expect(await client.getBlockNumber({ cacheTime: 0 })).toBe(head);
     });
     it("recovers a deployment after refresh without deploying a second proxy", async () => {
       const states: Record<string, StepState> = {};

@@ -213,3 +213,55 @@ describe("transaction recovery", () => {
     expect(io.send).toHaveBeenCalledTimes(1);
   });
 });
+
+it("refuses a write when its encoded data differs from the reviewed request", async () => {
+  const { io, step } = fixture();
+  step.build = () => ({
+    type: "write",
+    address: account,
+    abi: [
+      {
+        type: "function",
+        name: "set",
+        stateMutability: "nonpayable",
+        inputs: [{ name: "value", type: "uint256" }],
+        outputs: [],
+      },
+    ],
+    functionName: "set",
+    args: [2n],
+  });
+  await expect(
+    executeSequence(
+      [step],
+      { ...ctx, reviewedRequests: { write: "0xdeadbeef" } },
+      io,
+    ),
+  ).rejects.toThrow("differs from the reviewed calldata");
+  expect(io.send).not.toHaveBeenCalled();
+});
+
+it("adopts a recovered identical deployment without submitting a second transaction", async () => {
+  const { io, step, states } = fixture();
+  const transaction = {
+    from: account,
+    to: account,
+    nonce: 4,
+    input: "0x1234" as const,
+  };
+  io.recover = vi.fn(async () => ({ txHash: hash, transaction }));
+  step.capture = "userRegistry";
+  step.onReceipt = () => ({ userRegistry: resolver });
+  const result = await executeSequence([step], ctx, io);
+  expect(result.userRegistry).toBe(resolver);
+  expect(states.write.confirmed).toBe(true);
+  expect(io.send).not.toHaveBeenCalled();
+});
+
+it("persists a relink target's deployment block separately from its receipt block",async()=>{
+  const {io,step,states}=fixture();
+  step.registryDeployBlock="2";
+  await executeSequence([step],ctx,io);
+  expect(states.write.registryDeployBlock).toBe("2");
+  expect(states.write.blockNumber).toBe("10");
+});

@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import { networks } from '../src/config/deployments.ts';
 const selections = {
-  registryAbi: ['UserRegistryImpl', ['getSubregistry','getResolver','getState','getExpiry','getResource','getTokenId','roles','hasRoles','hasRootRoles','grantRootRoles','revokeRootRoles','grantRoles','revokeRoles','register','renew','setSubregistry','setResolver','setParent','getParent','LabelRegistered','TransferSingle','SubregistryUpdated','ExpiryUpdated','EACRolesChanged','isEmancipated','roleCount']],
+  registryAbi: ['UserRegistryImpl', ['getSubregistry','getResolver','getState','getExpiry','getResource','getTokenId','roles','hasRoles','hasRootRoles','grantRootRoles','revokeRootRoles','grantRoles','revokeRoles','register','renew','setSubregistry','setResolver','setParent','getParent','LabelRegistered','LabelReserved','TransferSingle','SubregistryUpdated','ExpiryUpdated','EACRolesChanged','isEmancipated','roleCount']],
   userRegistryInitAbi: ['UserRegistryImpl', ['initialize']],
   resolverInitAbi: ['PermissionedResolverImpl', ['initialize']],
-  resolverAbi: ['PermissionedResolverImpl', ['setAddress','setText','resolve','hasRootRoles']],
-  verifiableFactoryAbi: ['VerifiableFactory', ['deployProxy','ProxyDeployed']],
+  resolverAbi: ['PermissionedResolverImpl', ['setAddress','setText','resolve','hasRootRoles','getRecordId']],
+  resolverInspectionAbi: ['PermissionedResolverImpl', ['getRecordId','getRecordCount','roles','roleCount','supportsInterface','AddressUpdated','TextUpdated','DataUpdated','ABIUpdated','InterfaceUpdated','ContenthashUpdated','NameUpdated','Linked','Cleared']],
+  verifiableFactoryAbi: ['VerifiableFactory', ['deployProxy','ProxyDeployed','predictProxyAddress']],
 };
 const snapshots = {};
 for (const network of Object.values(networks)) {

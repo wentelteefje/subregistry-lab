@@ -9,7 +9,7 @@ import { wagmiConfig } from './wagmiConfig.ts'
 import './index.css'
 import App from './App.tsx'
 
-const queryClient = new QueryClient()
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

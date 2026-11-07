@@ -3,287 +3,323 @@ import {
   MAX_FOREIGN_RESOLVER_NODES,
   classifyResolver,
   toDiagram,
+  buildConfigurationExample,
+  type SetupView,
 } from "./diagramModel";
+import { PRESETS } from "./presets";
 import { ROLE_REGISTRAR, ROLE_RENEW } from "./roles";
-
-describe("toDiagram", () => {
-  it("minimal setup: just the parent chain", () => {
-    const d = toDiagram({ parentName: "nick.eth" });
-    expect(d.nodes.map((n) => n.id)).toEqual(["eth-registry", "parent"]);
-    expect(d.edges).toHaveLength(1);
-  });
-
-  it("full setup renders registry, registrar with role badges, resolver, subnames", () => {
-    const d = toDiagram({
-      parentName: "nick.eth",
-      parentOwner: "0x1111111111111111111111111111111111111111",
-      userRegistry: "0x2222222222222222222222222222222222222222",
-      registrar: "0x4444444444444444444444444444444444444444",
-      registrarRoles: ROLE_REGISTRAR | ROLE_RENEW,
-      resolver: "0x3333333333333333333333333333333333333333",
-      subnames: [{ label: "alice" }, { label: "perma", neverExpires: true }],
-    });
-    const ids = d.nodes.map((n) => n.id);
-    expect(ids).toContain("user-registry");
-    expect(ids).toContain("registrar");
-    expect(ids).toContain("resolver");
-    expect(ids).toContain("sub-alice");
-    expect(ids).toContain("sub-perma");
-
-    const registrarEdge = d.edges.find((e) => e.id === "e-registrar-registry");
-    expect(registrarEdge?.label).toBe("REGISTRAR + RENEW");
-
-    const perma = d.nodes.find((n) => n.id === "sub-perma");
-    expect((perma?.data as { label: string }).label).toContain("∞");
-
-    // records live on the resolver: one registry->resolver edge
-    const recordsEdge = d.edges.find((e) => e.id === "e-registry-resolver");
-    expect(recordsEdge?.label).toBe("records");
-  });
-
-  it("placeholders render as-is; real addresses are shortened", () => {
-    const d = toDiagram({
-      parentName: "nick.eth",
-      userRegistry: "new",
-      registrar: "new",
-      registrarRoles: ROLE_REGISTRAR,
-    });
-    const reg = d.nodes.find((n) => n.id === "user-registry");
-    expect((reg?.data as { subtitle: string }).subtitle).toBe("new");
-    const registrar = d.nodes.find((n) => n.id === "registrar");
-    expect((registrar?.data as { id: string }).id).toBe("new");
-
-    const real = toDiagram({
-      parentName: "nick.eth",
-      userRegistry: "0x2222222222222222222222222222222222222222",
-    });
-    const regReal = real.nodes.find((n) => n.id === "user-registry");
-    expect((regReal?.data as { subtitle: string }).subtitle).toBe("0x2222…2222");
-  });
-
-  it("no registrar node when absent, locked flag changes registry label", () => {
-    const d = toDiagram({
-      parentName: "nick.eth",
-      userRegistry: "0x2222222222222222222222222222222222222222",
-      locked: true,
-    });
-    expect(d.nodes.find((n) => n.id === "registrar")).toBeUndefined();
-    const reg = d.nodes.find((n) => n.id === "user-registry");
-    expect((reg?.data as { label: string }).label).toContain("LOCKED");
-  });
-
-  it("is deterministic", () => {
-    const setup = {
-      parentName: "nick.eth",
-      userRegistry: "0x2222222222222222222222222222222222222222",
-      subnames: [{ label: "a" }, { label: "b" }],
-    };
-    expect(JSON.stringify(toDiagram(setup))).toBe(JSON.stringify(toDiagram(setup)));
+const shared = "0x3333333333333333333333333333333333333333";
+const own = "0x4444444444444444444444444444444444444444";
+const base: SetupView = {
+  parentName: "lab.eth",
+  userRegistry: "new",
+  resolver: shared,
+  resolverRecords: {
+    [shared]: {
+      "lab.eth": "1",
+      "alice.lab.eth": "2",
+      "bare.lab.eth": "0",
+      "": "3",
+    },
+    [own]: { "bob.lab.eth": "1", "alice.lab.eth": "2", "": "0" },
+  },
+};
+describe("resolver classification", () => {
+  it("distinguishes missing pointers, the shared contract and another resolver", () => {
+    expect(classifyResolver(undefined, shared)).toBe("none");
+    expect(classifyResolver(`0x${"0".repeat(40)}`, shared)).toBe("none");
+    expect(classifyResolver(shared, shared.toUpperCase())).toBe("default");
+    expect(classifyResolver(own, shared)).toBe("foreign");
+    expect(classifyResolver(own)).toBe("foreign");
   });
 });
-
-describe("classifyResolver", () => {
-  const DEFAULT = "0x3333333333333333333333333333333333333333";
-
-  it("none: undefined, empty, or the zero address", () => {
-    expect(classifyResolver(undefined, DEFAULT)).toBe("none");
-    expect(classifyResolver("", DEFAULT)).toBe("none");
+describe("configuration diagrams", () => {
+  it("draws only the parent chain when nothing is attached", () => {
+    const diagram = toDiagram({ parentName: "lab.eth" });
+    expect(diagram.nodes.map((node) => node.id)).toEqual(["parent"]);
+    expect(diagram.edges).toHaveLength(0);
+  });
+  it("shows plain token labels inside the registry boundary", () => {
+    const diagram = toDiagram({
+      ...base,
+      subnames: [{ label: "alice", neverExpires: true }],
+    });
+    const child = diagram.nodes.find((node) => node.id === "sub-alice")!;
+    expect(child.parentId).toBe("user-registry");
+    expect(child.type).toBe("action");
+    expect(child.data.label).toContain("∞");
     expect(
-      classifyResolver("0x0000000000000000000000000000000000000000", DEFAULT),
-    ).toBe("none");
+      diagram.edges.find((edge) => edge.id === "e-parent-registry")?.target,
+    ).toBe("user-registry");
   });
-
-  it("default: matches the shared resolver case-insensitively", () => {
-    expect(classifyResolver(DEFAULT, DEFAULT)).toBe("default");
-    expect(classifyResolver(DEFAULT.toUpperCase().replace("0X", "0x"), DEFAULT)).toBe(
-      "default",
-    );
-  });
-
-  it("foreign: any other non-zero address, or anything when no default exists", () => {
+  it("draws parent resolver and subregistry pointers independently", () => {
+    const diagram = toDiagram(base);
     expect(
-      classifyResolver("0x9999999999999999999999999999999999999999", DEFAULT),
-    ).toBe("foreign");
-    expect(classifyResolver(DEFAULT, undefined)).toBe("foreign");
-  });
-
-  it("a zero-address default never matches", () => {
+      diagram.edges.find((edge) => edge.id === "e-parent-resolver")?.source,
+    ).toBe("parent");
     expect(
-      classifyResolver(DEFAULT, "0x0000000000000000000000000000000000000000"),
-    ).toBe("foreign");
+      diagram.edges.some(
+        (edge) => edge.source === "user-registry" && edge.target === "resolver",
+      ),
+    ).toBe(false);
+    expect(
+      diagram.nodes.find((node) => node.id === "resolver")?.data,
+    ).not.toHaveProperty("addr");
+    expect(
+      diagram.nodes.find((node) => node.id === "resolver")?.data,
+    ).not.toHaveProperty("owner");
   });
-});
-
-describe("toDiagram shared resolver from the parent pointer", () => {
-  it("a zero-address shared resolver draws no resolver node", () => {
-    const d = toDiagram({
-      parentName: "nick.eth",
-      userRegistry: "0x2222222222222222222222222222222222222222",
-      resolver: "0x0000000000000000000000000000000000000000",
-      subnames: [{ label: "alice" }],
-    });
-    expect(d.nodes.find((n) => n.id === "resolver")).toBeUndefined();
-    expect(d.edges.find((e) => e.id === "e-registry-resolver")).toBeUndefined();
-  });
-});
-
-describe("toDiagram foreign resolvers", () => {
-  const BASE = {
-    parentName: "nick.eth",
-    userRegistry: "0x2222222222222222222222222222222222222222",
-    resolver: "0x3333333333333333333333333333333333333333",
-  };
-  const FOREIGN = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-
-  it("a deviating subname gets its own resolver node plus a records edge", () => {
-    const d = toDiagram({
-      ...BASE,
+  it("distinguishes explicit resolver pointers from nearest-ancestor inheritance", () => {
+    const diagram = toDiagram({
+      ...base,
       subnames: [
-        { label: "alice", resolver: BASE.resolver },
-        { label: "bob", resolver: FOREIGN },
-      ],
-    });
-    const node = d.nodes.find((n) => n.id === `resolver-${FOREIGN.toLowerCase()}`);
-    expect(node).toBeDefined();
-    expect((node?.data as { foreign?: boolean }).foreign).toBe(true);
-    const edge = d.edges.find((e) => e.id === "e-sub-bob-resolver");
-    expect(edge?.source).toBe("sub-bob");
-    expect(edge?.target).toBe(node?.id);
-    expect(edge?.label).toBe("records");
-    // alice stays on the shared resolver: no per-sub edge for her
-    expect(d.edges.find((e) => e.id === "e-sub-alice-resolver")).toBeUndefined();
-  });
-
-  it("aggregate registry->resolver edge relabels once any subname deviates", () => {
-    const all = toDiagram({
-      ...BASE,
-      subnames: [{ label: "alice", resolver: BASE.resolver }],
-    });
-    expect(all.edges.find((e) => e.id === "e-registry-resolver")?.label).toBe("records");
-
-    const mixed = toDiagram({
-      ...BASE,
-      subnames: [
-        { label: "alice", resolver: BASE.resolver },
-        { label: "bob", resolver: FOREIGN },
-      ],
-    });
-    expect(mixed.edges.find((e) => e.id === "e-registry-resolver")?.label).toBe(
-      "default records",
-    );
-  });
-
-  it("subnames without a resolver get the ∅ marker", () => {
-    const d = toDiagram({
-      ...BASE,
-      subnames: [
+        { label: "alice", resolver: shared },
         { label: "bare" },
-        { label: "zero", resolver: "0x0000000000000000000000000000000000000000" },
-        { label: "alice", resolver: BASE.resolver },
+        { label: "bob", resolver: own },
       ],
     });
-    const label = (id: string) =>
-      (d.nodes.find((n) => n.id === id)?.data as { label: string }).label;
-    expect(label("sub-bare")).toContain("∅");
-    expect(label("sub-zero")).toContain("∅");
-    expect(label("sub-alice")).not.toContain("∅");
+    expect(
+      diagram.edges.find((edge) => edge.id === "e-sub-alice-resolver")?.label,
+    ).toBe("resolver");
+    const inherited = diagram.edges.find(
+      (edge) => edge.id === "e-sub-bare-resolver",
+    )!;
+    expect(inherited.label).toBeUndefined();
+    expect(inherited.style?.strokeDasharray).toBeDefined();
+    expect(
+      diagram.edges.find((edge) => edge.id === "e-sub-bob-resolver")?.target,
+    ).toBe(`resolver-${own}`);
+    expect(diagram.affinities?.resolver).toContain("sub-bare");
+    expect(diagram.affinities?.resolver).not.toContain("sub-bob");
   });
-
-  it("two subnames sharing a foreign resolver share one node with two edges", () => {
-    const d = toDiagram({
-      ...BASE,
-      subnames: [
-        { label: "bob", resolver: FOREIGN },
-        // same address, different casing: must dedupe
-        { label: "carol", resolver: FOREIGN.toLowerCase() },
-      ],
-    });
-    const foreignNodes = d.nodes.filter((n) => n.id.startsWith("resolver-0x"));
-    expect(foreignNodes).toHaveLength(1);
-    const incoming = d.edges.filter((e) => e.target === foreignNodes[0].id);
-    expect(incoming.map((e) => e.source).sort()).toEqual(["sub-bob", "sub-carol"]);
-    // converging edges carry the "records" label only once
-    expect(incoming.filter((e) => e.label === "records")).toHaveLength(1);
+  it("keeps full resolver names but shows only labels in registry tokens", () => {
+    const diagram = toDiagram({ ...base, subnames: [{ label: "alice" }] });
+    expect(diagram.nodes.find((node) => node.id === "sub-alice")?.data.label).toBe("alice");
+    expect(diagram.nodes.find((node) => node.id === "resolver-name-1")?.data).toMatchObject({ label: "alice.lab.eth", note: "name link" });
+    expect(diagram.nodes.map((node) => node.type)).not.toContain("record");
   });
-
-  it("caps dedicated nodes and aggregates the distinct overflow", () => {
-    const subs = Array.from({ length: MAX_FOREIGN_RESOLVER_NODES + 2 }, (_, i) => ({
-      label: `s${i}`,
-      resolver: `0x${String(i + 1).padStart(40, "0")}`,
-    }));
-    // duplicate of an overflow address must not inflate the "+N more" count
-    subs.push({ label: "dupe", resolver: subs[subs.length - 1].resolver });
-    const d = toDiagram({ ...BASE, subnames: subs });
-
-    const dedicated = d.nodes.filter((n) => n.id.startsWith("resolver-0x"));
-    expect(dedicated).toHaveLength(MAX_FOREIGN_RESOLVER_NODES);
-
-    const more = d.nodes.find((n) => n.id === "resolver-more");
-    expect((more?.data as { label: string }).label).toBe("+2 more");
-    // all three overflow subnames (2 distinct + 1 dupe) route to the shared node
-    expect(d.edges.filter((e) => e.target === "resolver-more")).toHaveLength(3);
+  it("shows verified default fallback as a row status", () => {
+    const diagram = toDiagram({ ...base, resolverRecords: { [shared]: { "lab.eth": "0", "": "9" } } });
+    expect(diagram.nodes.find((node) => node.id === "resolver-name-0")?.data).toMatchObject({ note: "uses default record" });
+    expect(toDiagram({ ...base, resolverRecords: { [shared]: { "lab.eth": "0", "": "0" } } }).nodes.map((node) => node.type)).not.toContain("resolver");
   });
-
-  it("foreign resolver nodes sit right of the subnames and never stack", () => {
-    const d = toDiagram({
-      ...BASE,
-      subnames: [
-        // three adjacent rows, each with a distinct foreign resolver: boxes
-        // are taller than a subname row, so naive row alignment would overlap
-        { label: "a", resolver: "0x1111111111111111111111111111111111111111" },
-        { label: "b", resolver: "0x2222222222222222222222222222222222222223" },
-        { label: "c", resolver: "0x4444444444444444444444444444444444444444" },
-      ],
-    });
-    const subXs = d.nodes.filter((n) => n.id.startsWith("sub-")).map((n) => n.position.x);
-    const foreign = d.nodes.filter((n) => n.id.startsWith("resolver-0x"));
-    for (const f of foreign) {
-      expect(f.position.x).toBeGreaterThan(Math.max(...subXs) + 200);
+  it("never invents record bundles for loading, failed or planned reads", () => {
+    for (const resolverRecords of [
+      undefined,
+      { [shared]: { "lab.eth": null } },
+    ]) {
+      const diagram = toDiagram({ ...base, resolverRecords });
+      expect(diagram.nodes.some((node) => String(node.type) === "record")).toBe(false);
+      expect(
+        diagram.nodes.some((node) => String(node.data.label).includes("*")),
+      ).toBe(false);
     }
-    const ys = foreign.map((f) => f.position.y).sort((a, b) => a - b);
-    for (let i = 1; i < ys.length; i++) {
-      expect(ys[i] - ys[i - 1]).toBeGreaterThanOrEqual(100);
+    expect(
+      toDiagram({ ...base, resolver: "new" }).nodes.some(
+        (node) => node.type === "resolver",
+      ),
+    ).toBe(false);
+  });
+  it("keeps record ids scoped to each resolver, including another contract shared by multiple names", () => {
+    const diagram = toDiagram({
+      ...base,
+      subnames: [
+        { label: "alice", resolver: own },
+        { label: "bob", resolver: own.toUpperCase().replace("0X", "0x") },
+      ],
+      resolverRecords: {
+        [shared]: { "lab.eth": "1" },
+        [own]: { "alice.lab.eth": "1", "bob.lab.eth": "1" },
+      },
+    });
+    expect(
+      diagram.nodes.filter((node) => node.type === "resolver"),
+    ).toHaveLength(2);
+    expect(diagram.nodes.find((node) => node.id === "resolver-name-0")?.data).toMatchObject({ note: "name link" });
+    expect(diagram.nodes.find((node) => node.id === `resolver-${own}-name-0`)?.data).toMatchObject({ note: "name link" });
+    expect(diagram.nodes.map((node) => node.type)).not.toContain("record");
+  });
+  it("caps distinct own resolver frames, counts unique overflow and never overlaps frames", () => {
+    const subnames = Array.from(
+      { length: MAX_FOREIGN_RESOLVER_NODES + 2 },
+      (_, index) => ({
+        label: `s${index}`,
+        resolver: `0x${String(index + 1).padStart(40, "0")}`,
+      }),
+    );
+    subnames.push({ ...subnames.at(-1)!, label: "duplicate" });
+    const diagram = toDiagram({
+      ...base,
+      subnames,
+      resolverRecords: {
+        ...base.resolverRecords,
+        ...Object.fromEntries(
+          subnames.map((sub) => [
+            sub.resolver,
+            Object.fromEntries(
+              subnames
+                .filter((other) => other.resolver === sub.resolver)
+                .map((other) => [`${other.label}.lab.eth`, "1"]),
+            ),
+          ]),
+        ),
+      },
+    });
+    expect(
+      diagram.nodes.find((node) => node.id === "resolver-more")?.data.label,
+    ).toBe("+2 more resolvers");
+    const frames = diagram.nodes.filter((node) => node.type === "resolver");
+    for (let i = 1; i < frames.length; i++)
+      expect(frames[i].position.y).toBeGreaterThanOrEqual(
+        frames[i - 1].position.y + Number(frames[i - 1].style?.height),
+      );
+  });
+  it("counts linked resolvers without records in the overflow summary", () => {
+    const subnames = Array.from({length: 5}, (_, index) => ({label: `s${index}`, resolver: `0x${String(index + 1).padStart(40, "0")}`}));
+    const empty = {label: "empty", resolver: `0x${"9".repeat(40)}`};
+    const diagram = toDiagram({...base, subnames: [...subnames, empty], resolverRecords: Object.fromEntries(subnames.map(sub => [sub.resolver, {[`${sub.label}.lab.eth`]: "1"}]))});
+    expect(diagram.nodes.find(node => node.id === "resolver-more")?.data.label).toBe("+2 more resolvers");
+    expect(diagram.edges.find(edge => edge.source === "sub-empty")?.target).toBe("resolver-more");
+    expect(diagram.edges.find(edge => edge.source === "sub-s4")?.target).toBe("resolver-more");
+  });
+  it("distinguishes unread, unavailable and unlinked resolver name rows", () => {
+    const diagram = toDiagram({...base, subnames: [{label:"alice"}, {label:"bob"}, {label:"bare"}], resolverRecords:{[shared]:{"lab.eth":"1", "alice.lab.eth":null, "bare.lab.eth":"0"}}});
+    const notes = diagram.nodes.filter(node => node.type === "action").map(node => node.data.note);
+    expect(notes).toContain("record lookup unavailable");
+    expect(notes).toContain("record link not read yet");
+    expect(notes).toContain("no direct record link");
+  });
+  it("retains registrar permissions and locked registry state", () => {
+    const diagram = toDiagram({
+      ...base,
+      locked: true,
+      subnames: [{ label: "alice" }],
+      registrar: "new",
+      registrarRoles: ROLE_REGISTRAR | ROLE_RENEW,
+    });
+    expect(
+      diagram.nodes.find((node) => node.id === "user-registry")?.data.label,
+    ).toContain("LOCKED");
+    expect(
+      diagram.edges.find((edge) => edge.id === "e-registrar-registry")?.label,
+    ).toBe("REGISTRAR + RENEW");
+    expect(
+      toDiagram({ ...base, resolver: `0x${"0".repeat(40)}` }).nodes.some(
+        (node) => node.id === "resolver",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("configuration examples and empty live diagrams", () => {
+  for (const preset of PRESETS)
+    it(`shows a clearly illustrative nonempty ${preset.id} configuration`, () => {
+      const setup = buildConfigurationExample("wallet.eth", preset, "new");
+      expect(setup.illustrative).toBe(true);
+      expect(setup.resolverRecords).toBeUndefined();
+      expect(
+        JSON.stringify(setup, (_, value) =>
+          typeof value === "bigint" ? value.toString() : value,
+        ),
+      ).not.toMatch(/0x[0-9a-f]{40}/i);
+      const diagram = toDiagram(setup);
+      expect(diagram.nodes.some((node) => node.id === "eth-registry")).toBe(
+        false,
+      );
+      expect(
+        diagram.nodes.filter((node) => String(node.type) === "record"),
+      ).toHaveLength(0);
+      expect(
+        diagram.nodes
+          .filter(
+            (node) => String(node.type) === "record" || node.id.startsWith("sub-"),
+          )
+          .every((node) => !String(node.data.label).includes("wallet.eth")),
+      ).toBe(true);
+      expect(
+        diagram.nodes.find((node) => node.id === "user-registry")?.data.label,
+      ).not.toContain("LOCKED");
+      expect(
+        diagram.nodes.find((node) => node.id === "registrar") !== undefined,
+      ).toBe(Boolean(preset.registrar));
+      const ids = new Set(diagram.nodes.map((node) => node.id));
+      expect(
+        diagram.edges.every(
+          (edge) => ids.has(edge.source) && ids.has(edge.target),
+        ),
+      ).toBe(true);
+      expect(
+        diagram.nodes
+          .filter((node) => node.type === "action")
+          .some((node) => node.data.label === "wallet.eth"),
+      ).toBe(false);
+    });
+  it("draws only the parent for an empty, unread or failed live setup", () => {
+    for (const resolverRecords of [
+      undefined,
+      { [shared]: { "lab.eth": "0", "": "0" } },
+      { [shared]: { "lab.eth": null, "": null } },
+    ]) {
+      const diagram = toDiagram({ ...base, resolverRecords });
+      expect(diagram.nodes.map((node) => node.id)).toEqual(["parent"]);
+      expect(diagram.edges).toEqual([]);
     }
   });
-
-  it("shared resolver affinities cover the parent and non-foreign subnames", () => {
-    const d = toDiagram({
-      ...BASE,
-      subnames: [
-        { label: "alice", resolver: BASE.resolver }, // default: explicit pointer
-        { label: "bare" }, // none: falls back to the shared resolver
-        { label: "bob", resolver: FOREIGN }, // foreign: its own resolver wins
-      ],
+  it("shows explicit shared resolver pointers even before record data is available", () => {
+    const diagram = toDiagram({
+      ...base,
+      subnames: [{ label: "alice", resolver: shared }],
+      resolverRecords: {},
     });
-    const related = d.affinities?.["resolver"] ?? [];
-    expect(related).toContain("parent");
-    expect(related).toContain("sub-alice");
-    expect(related).toContain("sub-bare");
-    expect(related).not.toContain("sub-bob");
-    // symmetric: hovering a served subname relates back to the resolver
-    expect(d.affinities?.["sub-bare"]).toContain("resolver");
-    expect(d.affinities?.["sub-bob"]).toBeUndefined();
+    expect(diagram.nodes.some((node) => node.id === "user-registry")).toBe(
+      true,
+    );
+    expect(diagram.nodes.some((node) => node.id === "resolver")).toBe(true);
+    expect(diagram.edges.find((edge) => edge.source === "sub-alice")?.target).toBe("resolver");
+    const ids = new Set(diagram.nodes.map((node) => node.id));
+    expect(
+      diagram.edges.every(
+        (edge) => ids.has(edge.source) && ids.has(edge.target),
+      ),
+    ).toBe(true);
   });
-
-  it("no affinities without a shared resolver", () => {
-    const d = toDiagram({
-      parentName: "nick.eth",
-      userRegistry: "0x2222222222222222222222222222222222222222",
-      subnames: [{ label: "bare" }],
-    });
-    expect(d.affinities).toEqual({});
+  it("keeps a linked own resolver visible through loading, zero and failed record reads", () => {
+    const snapshot = {
+      ...base,
+      parentName: "sgtest-mv6mhi7a.eth",
+      subnames: [{label:"alice",resolver:shared}, {label:"greg",resolver:own}],
+    };
+    const expectedNotes = ["record link not read yet", "no direct record link", "record lookup unavailable"];
+    let stableIds: string[] | undefined;
+    for (const [index, records] of [undefined, {"greg.sgtest-mv6mhi7a.eth":"0", "":"0"}, {"greg.sgtest-mv6mhi7a.eth":null, "":null}].entries()) {
+      const diagram = toDiagram({...snapshot, resolverRecords: records ? {[own]:records} : undefined});
+      const ids = diagram.nodes.map(node=>node.id);
+      stableIds ??= ids;
+      expect(ids).toEqual(stableIds);
+      const frame = diagram.nodes.find(node=>node.id===`resolver-${own}`)!;
+      expect(frame.data).toMatchObject({address:"0x4444…4444",note:"Linked names · no record data verified"});
+      expect(diagram.nodes.find(node=>node.id===`resolver-${own}-name-0`)?.data).toMatchObject({label:"greg.sgtest-mv6mhi7a.eth",note:expectedNotes[index]});
+      expect(diagram.edges.find(edge=>edge.id==="e-sub-greg-resolver")).toMatchObject({target:frame.id,label:"resolver"});
+      expect(diagram.nodes.map(node=>node.type)).not.toContain("record");
+      expect(diagram.nodes.some(node=>String(node.data.label).includes("*"))).toBe(false);
+    }
   });
-
-  it("no foreign machinery when everyone uses the shared resolver", () => {
-    const d = toDiagram({
-      ...BASE,
-      subnames: [
-        { label: "alice", resolver: BASE.resolver },
-        { label: "bob", resolver: BASE.resolver.toUpperCase().replace("0X", "0x") },
-      ],
-    });
-    expect(d.nodes.some((n) => n.id.startsWith("resolver-0x"))).toBe(false);
-    expect(d.nodes.some((n) => n.id === "resolver-more")).toBe(false);
-    expect(d.edges.find((e) => e.id === "e-registry-resolver")?.label).toBe("records");
+  it("does not draw orphan resolver frames for subnames without a registry", () => {
+    const diagram = toDiagram({...base,userRegistry:undefined,resolverRecords:undefined,subnames:[{label:"greg",resolver:own}]});
+    expect(diagram.nodes.map(node=>node.id)).toEqual(["parent"]);
+    expect(diagram.edges).toEqual([]);
+  });
+  it("has no example resolver when none was selected", () => {
+    const diagram = toDiagram(
+      buildConfigurationExample("wallet.eth", PRESETS[0], "none"),
+    );
+    expect(
+      diagram.nodes.some(
+        (node) => node.type === "resolver" || String(node.type) === "record",
+      ),
+    ).toBe(false);
+    expect(
+      diagram.nodes.filter((node) => node.id.startsWith("sub-")),
+    ).toHaveLength(2);
   });
 });

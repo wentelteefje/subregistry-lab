@@ -4,6 +4,7 @@
  * (re)configure it. On-chain truth for the inspect step.
  */
 
+import { useCallback } from "react";
 import { useReadContracts } from "wagmi";
 import { zeroAddress, type Abi, type Address } from "viem";
 import { registryAbi } from "../config/abis";
@@ -13,6 +14,7 @@ import { ROLE_SET_SUBREGISTRY } from "../lib/roles";
 
 export type NameStatus = {
   loading: boolean;
+  error?: string;
   expiry?: bigint;
   owner?: Address;
   /** address(0) when none is set. */
@@ -25,13 +27,21 @@ export type NameStatus = {
   refetch: () => void;
 };
 
-export function useNameStatus(parentLabel?: string, account?: Address): NameStatus {
+export function useNameStatus(
+  parentLabel?: string,
+  account?: Address,
+): NameStatus {
   const network = useDeployment();
   const deployments = network.addresses;
   const anyId = parentLabel ? labelhashId(parentLabel) : undefined;
   const enabled = Boolean(parentLabel && account);
 
-  const { data, isLoading, refetch } = useReadContracts({
+  const {
+    data,
+    isLoading,
+    refetch,
+    error: stateError,
+  } = useReadContracts({
     contracts: enabled
       ? [
           {
@@ -82,7 +92,12 @@ export function useNameStatus(parentLabel?: string, account?: Address): NameStat
   // calls _transferRoles in its transfer hook), but third-party grants don't,
   // and roles can be revoked, so canConfigure always comes from a live
   // hasRoles read rather than being inferred from ownership.
-  const { data: roleData, refetch: refetchRoles } = useReadContracts({
+  const {
+    data: roleData,
+    refetch: refetchRoles,
+    isLoading: rolesLoading,
+    error: rolesError,
+  } = useReadContracts({
     contracts:
       enabled && resource !== undefined
         ? [
@@ -97,16 +112,27 @@ export function useNameStatus(parentLabel?: string, account?: Address): NameStat
     query: { enabled: enabled && resource !== undefined },
   });
   const hasRoleDirectly = Boolean(roleData?.[0]?.result);
+  const readError =
+    stateError ??
+    data?.find((read) => read.status === "failure")?.error ??
+    rolesError ??
+    roleData?.find((read) => read.status === "failure")?.error;
+
+  const refresh = useCallback(() => {
+    void refetch();
+    void refetchRoles();
+  }, [refetch, refetchRoles]);
 
   return {
-    loading: isLoading,
+    loading: isLoading || rolesLoading,
+    error: readError?.message,
     expiry,
     owner,
     subregistry,
     hasSubregistry: Boolean(subregistry && subregistry !== zeroAddress),
     resolver,
-    canConfigure: hasRoleDirectly,
+    canConfigure: !readError && hasRoleDirectly,
     isOwner,
-    refetch: () => { void refetch(); void refetchRoles(); },
+    refetch: refresh,
   };
 }

@@ -1,3 +1,4 @@
+import { TransactionError } from "./TransactionError";
 import { paidOperationExpiry } from "../lib/registration";
 import { useLockStatus } from "../hooks/useLockStatus";
 import { useResolverAccess } from "../hooks/useResolverAccess";
@@ -12,11 +13,12 @@ import { useDeployment } from "../hooks/useDeployment";
 import { useMemo, useState } from "react";
 import { useAccount, usePublicClient } from "wagmi";
 import { isAddress, zeroAddress, type Abi, type Address } from "viem";
-import { ConfigDiagram } from "../diagram";
-import type { DiagramNode } from "../diagram";
+import { InspectionDiagram } from "./DiagramInspector";
+import { useQueryClient } from "@tanstack/react-query";
 import { registryAbi, simpleRegistrarAbi } from "../config/abis";
 
-import { classifyResolver, toDiagram } from "../lib/diagramModel";
+import { useResolverRecords } from "../hooks/useResolverRecords";
+import { classifyResolver, toDiagram, type SetupView } from "../lib/diagramModel";
 import { classifyError } from "../lib/errors";
 import { fqdn, normalizeLabel, subnameNode } from "../lib/names";
 import { MAX_EXPIRY, getPreset } from "../lib/presets";
@@ -30,11 +32,11 @@ import {
 } from "../lib/steps";
 import { useNameStatus } from "../hooks/useNameStatus";
 import { useRegistrarDiscovery } from "../hooks/useRegistrarDiscovery";
-import { useRegistryState, type Subname } from "../hooks/useRegistryState";
+import { useRegistryState } from "../hooks/useRegistryState";
 import { useTxSequence } from "../hooks/useTxSequence";
 import { useUsdc } from "../hooks/useUsdc";
 import { useLab } from "../state/LabContext";
-import { etherscanTx, explorerName } from "../lib/links";
+import { etherscanAddress, etherscanTx, explorerName } from "../lib/links";
 import { useIsReady } from "./ChainGuard";
 import { TxStepper } from "./TxStepper";
 import {
@@ -49,7 +51,8 @@ import type { StepDef } from "../lib/steps";
 
 const YEAR = 365n * 86400n;
 
-export function PlaygroundPanel() {
+export function PlaygroundPanel({ refreshVersion = 0, active = true }: { refreshVersion?: number; active?: boolean }) {
+  const queryClient = useQueryClient();
   const network = useDeployment();
   const deployments = network.addresses;
   const { address } = useAccount();
@@ -73,13 +76,13 @@ export function PlaygroundPanel() {
   // On-chain truth for the registrar: the session address if known, else
   // discovered from the registry's role grants (session memory can be lost
   // on reconfiguration while the registrar keeps its on-chain roles).
-  const discoveredRegistrar = useRegistrarDiscovery(
+  const registrarState = useRegistrarDiscovery(
     registry,
     fromBlock,
-    Boolean(session?.addresses.registrar),
+    session?.addresses.registrar,
   );
-  const registrar = session?.addresses.registrar ?? discoveredRegistrar;
-  const { subnames, loading, refresh } = useRegistryState(registry, fromBlock);
+  const registrar = registrarState.registrar;
+  const { subnames, loading, error:registryError, refresh } = useRegistryState(registry, fromBlock, refreshVersion);
   const usdc = useUsdc(address, registrar);
 
   const sequence = useTxSequence("playground");
@@ -105,15 +108,14 @@ export function PlaygroundPanel() {
   const [resolveResults, setResolveResults] = useState<Record<string, string>>(
     {},
   );
-  const [inspected, setInspected] = useState<DiagramNode | null>(null);
 
   const preset = session?.presetId ? getPreset(session.presetId) : undefined;
   const forever = foreverOverride ?? preset?.subnameDefaults.expiry === "max";
   const parentName = session ? `${session.parentLabel}.eth` : "";
 
-  const liveDiagram = useMemo(() => {
+  const liveSetup = useMemo<SetupView | undefined>(() => {
     if (!session || !registry) return undefined;
-    return toDiagram({
+    return {
       parentName,
       parentOwner: address,
       userRegistry: registry,
@@ -128,7 +130,7 @@ export function PlaygroundPanel() {
           neverExpires: s.neverExpires,
           resolver: s.resolver,
         })),
-    });
+    };
   }, [
     session,
     registry,
@@ -140,6 +142,9 @@ export function PlaygroundPanel() {
     parentName,
     registryLocked,
   ]);
+
+  const recordLinks = useResolverRecords(liveSetup, network.id, active);
+  const liveDiagram = useMemo(() => liveSetup ? toDiagram({ ...liveSetup, resolverRecords: recordLinks.data }) : undefined, [liveSetup, recordLinks.data]);
 
   if (!session || !address || !registry) return null;
 
@@ -163,6 +168,8 @@ export function PlaygroundPanel() {
     };
     const result = await sequence.run(plan, base);
     refresh();
+    void queryClient.invalidateQueries({ queryKey: ["diagram-inspection"] });
+    void queryClient.invalidateQueries({queryKey:["registrar-discovery"]});
     usdc.refetch();
     return result;
   };
@@ -309,17 +316,20 @@ export function PlaygroundPanel() {
 
   return (
     <div className="flex flex-col gap-6">
+      <p className="min-w-0 text-sm text-ens-muted">Linked registry: <a className="break-all font-mono text-ens-blue underline decoration-dotted" href={etherscanAddress(registry,network.id)} target="_blank" rel="noreferrer">{registry}</a></p>
+      {registryError && <TransactionError error={registryError} summary="Could not load subnames from this registry. The count is unavailable; this does not mean the registry is empty. Use Refresh below to retry."/>}
+      {registrarState.error && <TransactionError error={registrarState.error} summary="Could not verify this registry’s registrar. Paid actions are unavailable until the read succeeds."/>}
       {/* Explorer-style stat boxes */}
       <div className="flex flex-wrap gap-3">
-        <StatCard label="Subnames" value={registeredCount} />
+        <StatCard label="Subnames" value={registryError||loading?"—":registeredCount} />
         <StatCard
           label="Never expiring"
-          value={foreverCount}
+          value={registryError||loading?"—":foreverCount}
           hint="Subnames registered with the maximum expiry"
         />
         <StatCard
           label="Registrar"
-          value={registrar ? <AddressLink address={registrar} /> : "—"}
+          value={registrarState.error ? "Unknown" : registrarState.loading ? "Checking…" : registrar ? <AddressLink address={registrar} /> : "—"}
           hint={
             registrar ? "Paid registrations enabled" : "No registrar deployed"
           }
@@ -336,28 +346,8 @@ export function PlaygroundPanel() {
       </div>
 
       {/* Live diagram from on-chain state; click a resolver node to inspect it */}
-      {liveDiagram && (
-        <div className="h-80 overflow-hidden rounded-lg border border-neutral-200">
-          <ConfigDiagram
-            nodes={liveDiagram.nodes}
-            edges={liveDiagram.edges}
-            affinities={liveDiagram.affinities}
-            onNodeClick={(node) =>
-              setInspected(node.type === "resolver" ? node : null)
-            }
-          />
-        </div>
-      )}
-
-      {/* Resolver inspector (from a diagram click) */}
-      {inspected && (
-        <ResolverInspector
-          node={inspected}
-          sharedResolver={resolver}
-          parentName={parentName}
-          subnames={subnames}
-          onClose={() => setInspected(null)}
-        />
+      {liveDiagram && liveSetup && (
+        <InspectionDiagram diagram={liveDiagram} setup={liveSetup} chainId={network.id} account={address} active={active}/>
       )}
 
       {/* Register form */}
@@ -533,7 +523,7 @@ export function PlaygroundPanel() {
           </button>
         </div>
         {loading && <p className="text-sm opacity-70">Loading…</p>}
-        {!loading && subnames.length === 0 && (
+        {!loading && !registryError && subnames.length === 0 && (
           <p className="text-sm opacity-70">None yet, register one above.</p>
         )}
         <ul className="flex flex-col gap-2">
@@ -643,94 +633,3 @@ export function PlaygroundPanel() {
 }
 
 /** Detail card for a resolver node clicked in the diagram. */
-function ResolverInspector({
-  node,
-  sharedResolver,
-  parentName,
-  subnames,
-  onClose,
-}: {
-  node: DiagramNode;
-  sharedResolver?: Address;
-  parentName: string;
-  subnames: Subname[];
-  onClose: () => void;
-}) {
-  const network = useDeployment();
-  const isShared = node.id === "resolver";
-  const isOverflow = node.id === "resolver-more";
-  const addr = isShared
-    ? sharedResolver
-    : node.id.startsWith("resolver-0x")
-      ? (node.id.slice("resolver-".length) as Address)
-      : undefined;
-
-  // The shared resolver also serves subnames with no resolver of their own:
-  // resolution falls back to the nearest ancestor resolver (findResolver).
-  const servedSubnames = addr
-    ? subnames.filter(
-        (s) =>
-          s.registered &&
-          (isShared
-            ? classifyResolver(s.resolver, addr) !== "foreign"
-            : s.resolver.toLowerCase() === addr.toLowerCase()),
-      )
-    : [];
-  // The shared node only exists because the parent points at it.
-  const servesParent = isShared && Boolean(sharedResolver);
-
-  return (
-    <div className="flex flex-col gap-2 rounded-xl border border-ens-border bg-ens-card p-4">
-      <div className="flex items-center justify-between">
-        <h4 className="flex items-center gap-2 text-sm font-medium">
-          Resolver {addr && <AddressLink address={addr} />}
-          {isShared ? (
-            <Badge tone="green">shared (parent's resolver)</Badge>
-          ) : (
-            <Badge tone="amber">own resolver</Badge>
-          )}
-        </h4>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-sm opacity-60 hover:opacity-100"
-        >
-          ✕ close
-        </button>
-      </div>
-      {isOverflow ? (
-        <p className="text-sm opacity-70">
-          Several subnames use their own distinct resolvers; see the badges in
-          the subname list below.
-        </p>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="opacity-60">serves:</span>
-          {servesParent && (
-            <NameChip
-              name={parentName}
-              href={explorerName(parentName, network.id)}
-            />
-          )}
-          {servedSubnames.map((s) => (
-            <NameChip
-              key={s.label}
-              name={fqdn(s.label, parentName)}
-              href={explorerName(fqdn(s.label, parentName), network.id)}
-            />
-          ))}
-          {!servesParent && servedSubnames.length === 0 && (
-            <span className="opacity-60">no names currently</span>
-          )}
-        </div>
-      )}
-      {isShared && (
-        <p className="text-xs opacity-60">
-          This is whatever resolver the parent name points at on the .eth
-          registry. Subnames registered through this app use it by default; a
-          subname can switch to its own resolver at any time.
-        </p>
-      )}
-    </div>
-  );
-}

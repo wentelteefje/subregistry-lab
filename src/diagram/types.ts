@@ -6,6 +6,14 @@
 
 import type { Node, Edge } from "@xyflow/react";
 
+export type InspectionTarget =
+  | { kind: "registry"; address: `0x${string}` }
+  | { kind: "label"; registry: `0x${string}`; label: string }
+  | { kind: "resolver"; address: `0x${string}` }
+  | { kind: "name"; resolver: `0x${string}`; name: string };
+
+type Inspectable = { inspection?: InspectionTarget };
+
 /** Blue = domain/root nodes, brown = resolver nodes (Figma) */
 export type DiagramVariant = "blue" | "brown";
 
@@ -15,30 +23,34 @@ export type RootNodeData = {
   variant?: DiagramVariant;
 };
 
-export type ActionNodeData = {
+export type ActionNodeData = Inspectable & {
+  example?: boolean;
   label: string; // e.g. "eth", "montoya.eth"
+  note?: string;
   variant?: DiagramVariant;
 };
 
 export type GatewayNodeData = {
-  label: string;   // e.g. "REPLACEABLE GATEWAY"
-  id?: string;    // e.g. "eth.limo"
+  label: string; // e.g. "REPLACEABLE GATEWAY"
+  id?: string; // e.g. "eth.limo"
 };
 
 export type RegistryNodeData = {
-  label: string;    // e.g. "ONCHAIN NAME REGISTRY"
+  example?: boolean;
+  label: string; // e.g. "ONCHAIN NAME REGISTRY"
   subtitle?: string; // e.g. "ENS"
 };
 
-export type GroupNodeData = {
+export type GroupNodeData = Inspectable & {
   label: string;
+  subtitle?: string;
 };
 
-/** Resolver node: dark stack with sockets; foreign = light, socket-less ("not yours"). */
-export type ResolverNodeData = {
-  label: string;   // e.g. "Resolver 1"
-  owner?: string; // e.g. "0x5678..."
-  addr?: string;  // e.g. "0x5678..." for addr (60)
+/** Contract boundary containing fully qualified name entries. */
+export type ResolverNodeData = Inspectable & {
+  label: string; // e.g. "Resolver 1"
+  address?: string;
+  note?: string;
   foreign?: boolean;
 };
 

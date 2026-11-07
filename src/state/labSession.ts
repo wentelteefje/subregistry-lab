@@ -25,6 +25,8 @@ export type StepState = {
   status: StepStatus;
   txHash?: `0x${string}`;
   detail?: string;
+  /** Full diagnostic, shown only in a bounded technical disclosure. */
+  technicalDetail?: string;
   errorKind?: string;
   intent?: string;
   reverted?: boolean;
@@ -34,6 +36,8 @@ export type StepState = {
   title?: string;
   capture?: "userRegistry" | "resolver" | "registrar" | "subResolver";
   targetName?: string;
+  /** Factory deployment block of a relink target; never the relink receipt block. */
+  registryDeployBlock?: string;
   transaction?: {
     nonce: number;
     from: Address;
@@ -57,6 +61,8 @@ export type SessionData = {
   parentLabel: string;
   presetId?: PresetId;
   deployResolver: boolean;
+  /** Stable deployment salt seed for the reviewed setup, retained across reloads. */
+  setupNonce?: string;
   /** Custom subname-owner role bitmap (overrides the preset default), as string. */
   subnameRoleBitmap?: string;
   registrarParams?: {
@@ -72,6 +78,7 @@ export type SessionData = {
   ownResolvers?: Record<string, Address>;
   /** Block of the registry deploy tx, for cheap subname log scans. */
   registryDeployBlock?: string;
+  registrySelection?: "setup" | "adopted";
   /** sequenceId -> stepId -> state */
   sequences: Record<string, Record<string, StepState>>;
 };
@@ -79,6 +86,7 @@ export type SessionData = {
 export type LabState = {
   activeKey?: string;
   sessions: Record<string, SessionData>;
+  registryHistory?: Record<string, Record<string, { deployBlock?: string }>>;
 };
 
 export function sessionKey(
@@ -112,6 +120,7 @@ export type LabAction =
       parentLabel: string;
       chainId?: number;
     }
+  | { type: "prepare-setup"; nonce: string }
   | { type: "set-preset"; presetId: PresetId }
   | { type: "set-deploy-resolver"; value: boolean }
   | { type: "set-subname-bitmap"; bitmap?: bigint }
@@ -123,8 +132,13 @@ export type LabAction =
         beneficiary: Address;
       };
     }
+  | {
+      type: "remember-registries";
+      registries: { address: Address; deployBlock?: bigint }[];
+    }
   | { type: "patch-addresses"; patch: Partial<SessionData["addresses"]> }
   | { type: "set-registry-deploy-block"; block: bigint }
+  | { type: "adopt-registry"; registry: Address; deployBlock?: bigint }
   | { type: "step-state"; sequenceId: string; stepId: string; state: StepState }
   | { type: "reset-sequence"; sequenceId: string }
   | { type: "cache-own-resolver"; name: string; address: Address }
@@ -142,10 +156,95 @@ export function isPendingTransaction(step: StepState): boolean {
   );
 }
 
+export function hasStartedSetup(session?: SessionData): boolean {
+  return Object.values(session?.sequences.setup ?? {}).some(
+    (step) =>
+      Boolean(step.transaction || step.txHash || step.confirmed) ||
+      step.status === "wallet",
+  );
+}
+
 export function hasUnfinishedSetup(session?: SessionData): boolean {
   return Object.values(session?.sequences.setup ?? {}).some(
     (step) => isPendingTransaction(step) || step.status === "wallet",
   );
+}
+
+export function hasUnfinishedTransactions(session?: SessionData): boolean {
+  return Object.values(session?.sequences ?? {}).some((steps) =>
+    Object.values(steps).some(
+      (step) => isPendingTransaction(step) || step.status === "wallet",
+    ),
+  );
+}
+
+/** Setup receipt captures stay isolated from the registry selected for browsing. */
+export function savedSetupAddresses(
+  session: SessionData,
+): SessionData["addresses"] {
+  const steps = session.sequences.setup ?? {};
+  return {
+    userRegistry: steps["deploy-registry"]?.context?.userRegistry,
+    resolver:
+      steps["deploy-resolver"]?.context?.resolver ?? session.addresses.resolver,
+    registrar: steps["deploy-registrar"]?.context?.registrar,
+  };
+}
+
+export function registryHistoryKey(wallet: string, chainId: number) {
+  return `${getDeployment(chainId).deploymentSet}:${wallet.toLowerCase()}`;
+}
+function rememberRegistry(
+  state: LabState,
+  session: SessionData,
+  address: Address,
+  block?: bigint,
+): LabState {
+  const key = registryHistoryKey(session.wallet, session.chainId);
+  const existing = state.registryHistory?.[key] ?? {};
+  return {
+    ...state,
+    registryHistory: {
+      ...state.registryHistory,
+      [key]: {
+        ...existing,
+        [address.toLowerCase()]: {
+          deployBlock:
+            block?.toString() ?? existing[address.toLowerCase()]?.deployBlock,
+        },
+      },
+    },
+  };
+}
+function archiveSessionRegistry(
+  state: LabState,
+  session?: SessionData,
+): LabState {
+  if (!session) return state;
+  const step = session.sequences.setup?.["deploy-registry"];
+  if (
+    step?.confirmed &&
+    !step.reverted &&
+    !step.cancelled &&
+    step.context?.userRegistry &&
+    step.blockNumber
+  )
+    state = rememberRegistry(
+      state,
+      session,
+      step.context.userRegistry,
+      BigInt(step.blockNumber),
+    );
+  if (session.addresses.userRegistry)
+    state = rememberRegistry(
+      state,
+      session,
+      session.addresses.userRegistry,
+      session.registrySelection === "adopted" && session.registryDeployBlock
+        ? BigInt(session.registryDeployBlock)
+        : undefined,
+    );
+  return state;
 }
 
 export type ScopedLabAction = LabAction & { sessionKey?: string };
@@ -175,22 +274,23 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
   const selected = state.activeKey
     ? state.sessions[state.activeKey]
     : undefined;
+  const editsConfiguration = [
+    "set-preset",
+    "set-registrar-params",
+    "set-deploy-resolver",
+    "set-subname-bitmap",
+  ].includes(action.type);
+  const discardsSetup = ["reset-setup", "reset-session"].includes(action.type);
   if (
-    hasUnfinishedSetup(selected) &&
-    [
-      "reset-setup",
-      "reset-session",
-      "set-preset",
-      "set-registrar-params",
-      "set-deploy-resolver",
-      "set-subname-bitmap",
-    ].includes(action.type)
+    (hasStartedSetup(selected) && editsConfiguration) ||
+    (hasUnfinishedSetup(selected) && discardsSetup)
   )
     return state;
   switch (action.type) {
     case "select-name": {
       const key = sessionKey(action.wallet, action.parentLabel, action.chainId);
       return {
+        ...state,
         activeKey: key,
         sessions: {
           ...state.sessions,
@@ -202,6 +302,11 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
     }
     case "deselect":
       return { ...state, activeKey: undefined };
+    case "prepare-setup":
+      return withActive(state, (s) => ({
+        ...s,
+        setupNonce: s.setupNonce ?? action.nonce,
+      }));
     case "set-preset":
       return withActive(state, (s) => ({ ...s, presetId: action.presetId }));
     case "set-deploy-resolver":
@@ -222,10 +327,45 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
             }
           : undefined,
       }));
+    case "remember-registries":
+      if (!selected) return state;
+      return action.registries.reduce(
+        (result, entry) =>
+          rememberRegistry(result, selected, entry.address, entry.deployBlock),
+        state,
+      );
+    case "adopt-registry":
+      if (hasUnfinishedTransactions(selected)) return state;
+      state = archiveSessionRegistry(state, selected);
+      if (selected)
+        state = rememberRegistry(
+          state,
+          selected,
+          action.registry,
+          action.deployBlock,
+        );
+      return withActive(state, (s) => ({
+        ...s,
+        // Preserve setup receipts/salt for the retained deployment workspace.
+        // They are planning context, never metadata for this selected registry.
+        addresses: {
+          userRegistry: action.registry,
+          resolver: s.addresses.resolver,
+        },
+        registryDeployBlock:
+          action.deployBlock?.toString() ??
+          state.registryHistory?.[registryHistoryKey(s.wallet, s.chainId)]?.[
+            action.registry.toLowerCase()
+          ]?.deployBlock,
+        registrySelection: "adopted",
+      }));
     case "patch-addresses":
       return withActive(state, (s) => ({
         ...s,
         addresses: { ...s.addresses, ...action.patch },
+        registrySelection: action.patch.userRegistry
+          ? "setup"
+          : s.registrySelection,
       }));
     case "set-registry-deploy-block":
       return withActive(state, (s) => ({
@@ -258,6 +398,7 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
         },
       }));
     case "reset-setup":
+      state = archiveSessionRegistry(state, selected);
       // Fresh reconfiguration: forget the previous run's steps, the deployed
       // registry/registrar, and any custom role bitmap (the new preset's
       // default applies). The resolver choice is per-account and survives;
@@ -269,11 +410,14 @@ export function labReducer(state: LabState, action: ScopedLabAction): LabState {
           ...s,
           sequences,
           addresses: { resolver: s.addresses.resolver },
+          setupNonce: undefined,
           registryDeployBlock: undefined,
+          registrySelection: undefined,
           subnameRoleBitmap: undefined,
         };
       });
     case "reset-session":
+      state = archiveSessionRegistry(state, selected);
       return withActive(state, (s) =>
         newSession(s.wallet, s.parentLabel, s.chainId),
       );
@@ -331,6 +475,10 @@ export function loadState(): LabState {
         }
       return {
         sessions,
+        registryHistory:
+          parsed.registryHistory && typeof parsed.registryHistory === "object"
+            ? parsed.registryHistory
+            : undefined,
         activeKey:
           parsed.activeKey && sessions[parsed.activeKey]
             ? parsed.activeKey

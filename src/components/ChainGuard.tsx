@@ -1,5 +1,4 @@
-import { useAccount, useChainId, useSwitchChain } from "wagmi";
-import { networks } from "../config/deployments";
+import { useAccount, useChainId } from "wagmi";
 
 export function useIsReady(): boolean {
   const { isConnected, chainId } = useAccount();
@@ -7,16 +6,16 @@ export function useIsReady(): boolean {
   return isConnected && chainId === configured && (chainId === 1 || chainId === 11155111);
 }
 
+/** The header's RainbowKit selector handles network changes for every wallet. */
 export function ChainGuard() {
-  const { isConnected, chainId: walletChain } = useAccount();
-  const configured = useChainId();
-  const chainId = configured === 1 ? 1 : 11155111;
-  const { switchChain, isPending, error } = useSwitchChain();
-  return <div className="flex flex-wrap items-center gap-3 rounded-lg border border-neutral-200 p-3">
-    <label className="text-sm">Network <select aria-label="Network" className="ml-2 rounded border p-2" value={chainId} disabled={isPending} onChange={event => switchChain({ chainId: Number(event.target.value) as 1 | 11155111 })}>
-      {Object.values(networks).map(network => <option key={network.id} value={network.id}>{network.chain.name}</option>)}
-    </select></label>
-    {isConnected && walletChain !== chainId && <span className="text-sm text-amber-800">Switch your wallet to the selected network to enable actions.</span>}
-    {error && <span className="text-sm text-red-700">{error.message}</span>}
-  </div>;
+  const { isConnected } = useAccount();
+  const ready = useIsReady();
+  if (!isConnected || ready) return null;
+
+  return (
+    <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+      Choose Ethereum or Sepolia using the network button next to your wallet.
+      If your wallet cannot switch networks here, switch in your wallet.
+    </p>
+  );
 }

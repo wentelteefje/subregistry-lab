@@ -1,111 +1,106 @@
+import { withRpcSignal } from "../lib/rpcPool";
+import { publicRpcTransport } from "../lib/rpcPool";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { createPublicClient, type Address } from "viem";
 import { scanRanges } from "../lib/scan";
-/**
- * Proxies the connected wallet deployed through the VerifiableFactory.
- * Provenance is on-chain: ProxyDeployed has the sender indexed, and the
- * implementation field separates registries from resolvers.
- */
-
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  createPublicClient,
-  http,
-  type Abi,
-  type AbiEvent,
-  type Address,
-} from "viem";
-
 import { verifiableFactoryAbi } from "../config/abis";
 import { useDeployment } from "./useDeployment";
-import { classifyError } from "../lib/errors";
-
-export type DeployedProxy = {
-  address: Address;
-  blockNumber: bigint;
-};
-
-/** @deprecated alias kept for existing imports */
+export type DeployedProxy = { address: Address; blockNumber: bigint };
 export type DeployedRegistry = DeployedProxy;
-
-const proxyDeployedEvent = (verifiableFactoryAbi as Abi).find(
+const event = verifiableFactoryAbi.find(
   (e) => e.type === "event" && e.name === "ProxyDeployed",
-) as AbiEvent;
-
-/** All proxies of a given implementation the wallet deployed via the factory. */
-export function useDeployedProxies(wallet?: Address, implementation?: Address) {
+)!;
+export function useDeployedProxies(
+  wallet?: Address,
+  implementation?: Address,
+  refreshVersion?: string,
+) {
   const network = useDeployment();
-  const deployments = network.addresses;
-  const LOG_SCAN_RPC = network.logScanRpc;
-  const scanClient = useMemo(
-    () => createPublicClient({ chain: network.chain, transport: http(LOG_SCAN_RPC) }),
-    [network, LOG_SCAN_RPC],
+  const client = useMemo(
+    () =>
+      createPublicClient({
+        chain: network.chain,
+        transport: publicRpcTransport(network.id),
+      }),
+    [network],
   );
-  const [proxies, setProxies] = useState<DeployedProxy[]>([]);
-  const [error, setError] = useState<string>();
-  const [nonce, setNonce] = useState(0);
-
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
-
-  useEffect(() => {
-    if (!wallet || !implementation) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const head = await scanClient.getBlockNumber();
-        const logs = await scanRanges((fromBlock, toBlock) => scanClient.getLogs({
-          address: deployments.VerifiableFactory,
-          event: proxyDeployedEvent,
-          args: { sender: wallet },
-          fromBlock, toBlock,
-        }), BigInt(network.factoryDeployBlock), head, () => cancelled);
-        const found = logs
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .filter((l: any) =>
-            [implementation, ...(implementation.toLowerCase() === deployments.UserRegistryImpl.toLowerCase() ? network.previousRegistryImplementations : [])]
-              .some(candidate => candidate.toLowerCase() === (l.args.implementation as string).toLowerCase()),
-          )
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .map((l: any) => ({
-            address: l.args.proxyAddress as Address,
-            blockNumber: l.blockNumber as bigint,
-          }));
-        // newest first
-        found.sort((a: DeployedProxy, b: DeployedProxy) =>
-          a.blockNumber > b.blockNumber ? -1 : 1,
-        );
-        if (!cancelled) {
-          setProxies(found);
-          setError(undefined);
-        }
-      } catch (err) {
-        if (!cancelled) setError(classifyError(err).message);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [wallet, implementation, scanClient, nonce, network, deployments]);
-
-  return { proxies, error, refresh };
+  const query = useQuery({
+    queryKey: [
+      "deployed-proxies",
+      network.id,
+      wallet?.toLowerCase(),
+      implementation?.toLowerCase(),
+      refreshVersion,
+    ],
+    enabled: Boolean(wallet && implementation),
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+    queryFn: async ({ signal }) => {
+      const readClient = withRpcSignal(client, signal);
+      const head = await readClient.getBlockNumber({ cacheTime: 0 });
+      const logs = await scanRanges(
+        (fromBlock, toBlock) =>
+          readClient.getLogs({
+            address: network.addresses.VerifiableFactory,
+            event,
+            args: { sender: wallet! },
+            fromBlock,
+            toBlock,
+          }),
+        BigInt(network.factoryDeployBlock),
+        head,
+        () => signal.aborted,
+        `${network.deploymentSet}:deployed:${wallet!.toLowerCase()}`,
+      );
+      signal.throwIfAborted();
+      const implementations = [
+        implementation!,
+        ...(implementation!.toLowerCase() ===
+        network.addresses.UserRegistryImpl.toLowerCase()
+          ? network.previousRegistryImplementations
+          : []),
+      ].map((value) => value.toLowerCase());
+      return logs
+        .filter(
+          (log) =>
+            log.args.implementation &&
+            implementations.includes(log.args.implementation.toLowerCase()),
+        )
+        .map((log) => ({
+          address: log.args.proxyAddress!,
+          blockNumber: log.blockNumber!,
+        }))
+        .sort((a, b) => (a.blockNumber > b.blockNumber ? -1 : 1));
+    },
+  });
+  return {
+    proxies: query.data ?? [],
+    error: query.error?.message,
+    loading: Boolean(
+      wallet && implementation && (query.isPending || query.isFetching),
+    ),
+    refresh: () => void query.refetch(),
+  };
 }
-
-/** UserRegistry proxies deployed by the wallet. */
-export function useDeployedRegistries(wallet?: Address) {
-  const deployments = useDeployment().addresses;
-  const { proxies, error, refresh } = useDeployedProxies(
+export function useDeployedRegistries(
+  wallet?: Address,
+  refreshVersion?: string,
+) {
+  const network = useDeployment();
+  const { proxies, ...rest } = useDeployedProxies(
     wallet,
-    deployments.UserRegistryImpl,
+    network.addresses.UserRegistryImpl,
+    refreshVersion,
   );
-  return { registries: proxies, error, refresh };
+  return { registries: proxies, ...rest };
 }
-
-/** PermissionedResolver proxies deployed by the wallet. */
 export function useDeployedResolvers(wallet?: Address) {
-  const deployments = useDeployment().addresses;
-  const { proxies, error, refresh } = useDeployedProxies(
+  const network = useDeployment();
+  const { proxies, ...rest } = useDeployedProxies(
     wallet,
-    deployments.PermissionedResolverImpl,
+    network.addresses.PermissionedResolverImpl,
   );
-  return { resolvers: proxies, error, refresh };
+  return { resolvers: proxies, ...rest };
 }

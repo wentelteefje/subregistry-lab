@@ -1,55 +1,42 @@
-/**
- * Resolver node: ENS Diagram System resolver stack — dashed lapis/500 frame,
- * dark lapis fill, light Semi-Mono text, filled corner sockets.
- */
-
+/** Resolver contract frame. Children show fully qualified names. */
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
-import type { Node } from "@xyflow/react";
+import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { ResolverNodeData } from "../types";
-import CornerMarkers from "./CornerMarkers";
-
 export type ResolverNodeType = Node<ResolverNodeData, "resolver">;
-
 const handleClass =
   "!w-2 !h-2 !border-2 !bg-[var(--diagram-paper)] !border-[var(--diagram-stroke)]";
-
-function ResolverNode({ data, selected }: NodeProps<ResolverNodeType>) {
-  const foreign = Boolean(data.foreign);
+function ResolverNode({ data }: NodeProps<ResolverNodeType>) {
   return (
     <div
-      className={`
-        diagram-resolver diagram-node-dotted relative min-w-[150px] border-[1.5px] px-4 py-3
-        border-[var(--diagram-stroke)]
-        ${
-          foreign
-            ? "bg-[var(--diagram-paper)] text-[var(--diagram-ink)]"
-            : "bg-[var(--diagram-resolver-fill)] text-[var(--diagram-resolver-label)]"
-        }
-        ${selected ? "ring-2 ring-[var(--diagram-stroke)] ring-offset-2 ring-offset-[var(--diagram-paper)]" : ""}
-      `}
-      style={{ borderRadius: "var(--diagram-node-radius)" }}
+      className="diagram-resolver relative h-full w-full rounded-2xl border-[1.5px] border-dashed border-[var(--diagram-stroke)] text-[var(--diagram-ink)]"
+      style={{
+        background: data.foreign ? "rgba(255,255,255,0.12)" : "transparent",
+      }}
     >
-      {/* sockets mark YOUR resolver; foreign ones render without */}
-      {!foreign && <CornerMarkers />}
-      <Handle id="top" type="target" position={Position.Top} className={handleClass} />
-      <Handle id="left" type="target" position={Position.Left} className={handleClass} />
-      <div className="diagram-semimono font-medium text-[var(--diagram-font-main)] leading-tight">
+      <Handle
+        id="top"
+        type="target"
+        position={Position.Top}
+        className={handleClass}
+      />
+      <Handle
+        id="left"
+        type="target"
+        position={Position.Left}
+        className={handleClass}
+      />
+      <div className="diagram-semimono absolute -top-2.5 left-4 bg-[var(--diagram-paper)] px-2 text-xs font-medium tracking-wider text-[var(--diagram-stroke)]">
         {data.label}
       </div>
-      {data.owner != null && data.owner !== "" && (
-        <div className="diagram-semimono mt-0.5 text-[var(--diagram-font-sub)] font-normal opacity-80">
-          owner: {data.owner}
+      {data.address && (
+        <div className="diagram-semimono px-6 pt-5 text-xs opacity-75">
+          contract: {data.address}
         </div>
       )}
-      {data.addr != null && data.addr !== "" && (
-        <div className="diagram-semimono mt-0.5 text-[var(--diagram-font-sub)] font-normal opacity-80">
-          addr (60): {data.addr}
-        </div>
-      )}
-      <Handle type="source" position={Position.Bottom} className={handleClass} />
+      <div className="diagram-semimono absolute bottom-3 left-6 text-[10px] opacity-65">
+        {data.note}
+      </div>
     </div>
   );
 }
-
 export default memo(ResolverNode);

@@ -1,4 +1,11 @@
-import { hasUnfinishedSetup } from "../state/labSession";
+import { TransactionError } from "./TransactionError";
+import {
+  confirmedRegistryDeployments,
+  rememberedRegistries,
+} from "../lib/registrySelection";
+import { useDeployedRegistries } from "../hooks/useDeployedRegistries";
+import { useSessionActivity } from "../hooks/useSessionActivity";
+import { hasUnfinishedTransactions } from "../state/labSession";
 import { useDeployment } from "../hooks/useDeployment";
 /**
  * Step 3: show the selected name's current on-chain configuration and gate
@@ -27,15 +34,46 @@ export function SetupInspector({
 }) {
   const network = useDeployment();
   const { address } = useAccount();
-  const { session, dispatch } = useLab();
-  const blocked = hasUnfinishedSetup(session);
+  const { session, state, dispatch } = useLab();
+  const { senderBusy } = useSessionActivity();
+  const blocked = hasUnfinishedTransactions(session) || senderBusy;
   const status = useNameStatus(session?.parentLabel, address);
+  const deployment = session?.sequences.setup?.["deploy-registry"];
+  const { registries } = useDeployedRegistries(
+    address,
+    deployment?.confirmed
+      ? (deployment.txHash ?? deployment.blockNumber)
+      : undefined,
+  );
 
   if (!session || !address) return null;
+  const knownRegistries = [
+    ...registries,
+    ...rememberedRegistries(state, address, network.id),
+    ...confirmedRegistryDeployments([session], address, network.id),
+  ];
   const name = `${session.parentLabel}.eth`;
 
   if (status.loading)
     return <p className="text-sm opacity-70">Reading on-chain state…</p>;
+
+  if (status.error)
+    return (
+      <div className="flex flex-col gap-4">
+        <TransactionError
+          error={status.error}
+          summary="Could not verify the current setup. Retry the read before changing registries."
+        />
+        <button
+          type="button"
+          className="self-start text-sm text-ens-blue"
+          onClick={status.refetch}
+        >
+          Refresh current setup
+        </button>
+        <RegistryHistory onAdopt={() => onModeChosen("adopt")} />
+      </div>
+    );
 
   const now = BigInt(Math.floor(Date.now() / 1000));
   const expired = status.expiry !== undefined && status.expiry <= now;
@@ -106,16 +144,30 @@ export function SetupInspector({
             This name already has a subregistry.
             {session.addresses.userRegistry?.toLowerCase() ===
               status.subregistry?.toLowerCase() &&
-              " (This session deployed it.)"}
+              " (Selected in this session.)"}
           </p>
+          {blocked && (
+            <p role="status" className="text-sm text-amber-800">
+              Finish or cancel the outstanding wallet request, or recover its
+              pending transaction above, before changing setups.
+            </p>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
+              disabled={blocked}
               onClick={() => {
+                if (blocked) return;
                 if (status.subregistry) {
                   dispatch({
-                    type: "patch-addresses",
-                    patch: { userRegistry: status.subregistry },
+                    type: "adopt-registry",
+                    sessionKey: state.activeKey,
+                    registry: status.subregistry,
+                    deployBlock: knownRegistries.find(
+                      (reg) =>
+                        reg.address.toLowerCase() ===
+                        status.subregistry?.toLowerCase(),
+                    )?.blockNumber,
                   });
                 }
                 onModeChosen("adopt");
@@ -148,7 +200,9 @@ export function SetupInspector({
         </div>
       )}
 
-      {!expired && status.canConfigure && <RegistryHistory />}
+      {!expired && status.canConfigure && (
+        <RegistryHistory onAdopt={() => onModeChosen("adopt")} />
+      )}
     </div>
   );
 }

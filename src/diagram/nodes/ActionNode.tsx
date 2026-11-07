@@ -22,10 +22,32 @@ function ActionNode({ data, selected }: NodeProps<ActionNodeType>) {
         ${selected ? "ring-2 ring-[var(--diagram-stroke)] ring-offset-2 ring-offset-[var(--diagram-paper)]" : ""}
       `}
     >
-      <Handle id="left" type="target" position={Position.Left} className={handleClass} />
-      <Handle id="top" type="target" position={Position.Top} className={handleClass} />
-      <span className="diagram-marist text-[var(--diagram-font-main)]">{data.label}</span>
-      <Handle type="source" position={Position.Right} className={handleClass} />
+      <Handle
+        id="left"
+        type="target"
+        position={Position.Left}
+        className={handleClass}
+      />
+      <Handle
+        id="top"
+        type="target"
+        position={Position.Top}
+        className={handleClass}
+      />
+      <span title={data.label} className="diagram-marist block truncate text-[var(--diagram-font-main)]">
+        {data.label}
+        {data.example && (
+          <span className="diagram-semimono ml-2 text-[9px] opacity-70">
+            example
+          </span>
+        )}
+      </span>
+      {data.note && (
+        <div className="diagram-semimono mt-1 text-[10px] opacity-65">
+          {data.note}
+        </div>
+      )}
+      <Handle id="right" type="source" position={Position.Right} className={handleClass} />
     </div>
   );
 }

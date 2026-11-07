@@ -1,3 +1,4 @@
+import { useSessionActivity } from "../hooks/useSessionActivity";
 import { hasUnfinishedSetup } from "../state/labSession";
 /** Step 4: choose a configuration preset (or open the custom role editor). */
 
@@ -7,7 +8,8 @@ import { useLab } from "../state/LabContext";
 export function PresetPicker({ disabled }: { disabled?: boolean }) {
   const { session, dispatch } = useLab();
 
-  const blocked = hasUnfinishedSetup(session);
+  const { senderBusy } = useSessionActivity();
+  const blocked = hasUnfinishedSetup(session) || senderBusy;
   const choose = (presetId: PresetId) => {
     if (blocked) return;
     // Switching preset invalidates a previous run's steps/addresses; the

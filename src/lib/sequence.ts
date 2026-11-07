@@ -5,6 +5,7 @@ import {
   type TransactionReceipt,
 } from "viem";
 import { isPendingTransaction, type StepState } from "../state/labSession";
+import { classifyError, errorSummary } from "./errors";
 import {
   actionIntent,
   type ReadFn,
@@ -19,6 +20,13 @@ type Replacement = {
   transaction?: StepState["transaction"];
 };
 export type SequenceIO = {
+  recover?: (action: StepAction) => Promise<
+    | {
+        txHash: `0x${string}`;
+        transaction: NonNullable<StepState["transaction"]>;
+      }
+    | undefined
+  >;
   read: ReadFn;
   assertIdentity: () => Promise<void>;
   prepare?: (
@@ -122,6 +130,7 @@ export async function executeSequence(
             title: step.title,
             capture: step.capture,
             targetName: step.targetName,
+            registryDeployBlock: step.registryDeployBlock,
           };
     const publish = (patch: Partial<StepState>) => {
       state = { ...state, ...patch };
@@ -145,6 +154,7 @@ export async function executeSequence(
             title: step.title,
             capture: step.capture,
             targetName: step.targetName,
+            registryDeployBlock: step.registryDeployBlock,
           };
         }
         if (!state.txHash && step.preflight !== false && step.verify) {
@@ -154,7 +164,19 @@ export async function executeSequence(
             continue;
           }
         }
+        if (!state.txHash && io.recover) {
+          const recovered = await io.recover(action);
+          if (recovered) publish({ ...recovered, status: "mining" });
+        }
         if (!state.txHash) {
+          const reviewed = initial.reviewedRequests?.[step.id];
+          if (
+            reviewed &&
+            prepareTransaction(action, initial.account, 0).input !== reviewed
+          )
+            throw new Error(
+              "Transaction differs from the reviewed calldata. Return to review before sending.",
+            );
           await step.guard?.(io.read, ctx);
           publish({ status: "wallet" });
           if (io.prepare) publish({ transaction: await io.prepare(action) });
@@ -235,7 +257,9 @@ export async function executeSequence(
     } catch (error) {
       publish({
         status: "failed",
-        detail: error instanceof Error ? error.message : String(error),
+        detail: errorSummary(error, state),
+        technicalDetail: error instanceof Error ? error.message : String(error),
+        errorKind: classifyError(error).kind,
       });
       throw error;
     }

@@ -20,6 +20,7 @@ describe("deployment ABI compatibility", () => {
     ["registry init", local.userRegistryInitAbi, [mainRegistry, testRegistry]],
     ["resolver init", local.resolverInitAbi, [mainResolver, testResolver]],
     ["resolver", local.resolverAbi, [mainResolver, testResolver]],
+    ["resolver inspection", local.resolverInspectionAbi, [mainResolver, testResolver]],
     ["factory", local.verifiableFactoryAbi, [mainFactory, testFactory]],
   ] as const) it(`${name} matches both deployed snapshots, including event indexing`, () => {
     for (const snapshot of snapshots) for (const entry of abi) {

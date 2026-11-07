@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   createPublicClient,
+  encodeFunctionData,
+  decodeFunctionResult,
   createWalletClient,
   http,
   parseAbi,
@@ -13,7 +15,11 @@ import {
 } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { getDeployment } from "../src/config/deployments";
-import { registryAbi } from "../src/config/abis";
+import {
+  registryAbi,
+  verifiableFactoryAbi,
+  resolverAbi,
+} from "../src/config/abis";
 import {
   buildSetupSteps,
   buildDirectRegisterStep,
@@ -25,6 +31,10 @@ import {
   type StepCtx,
   type StepDef,
 } from "../src/lib/steps";
+import { readInspection, profileAbi } from "../src/lib/inspection";
+import { packetToBytes } from "viem/ens";
+import { toHex } from "viem";
+import { deriveSalt } from "../src/lib/salt";
 import { recoverPending } from "../src/lib/recovery";
 import { executeSequence, prepareTransaction } from "../src/lib/sequence";
 import { ALL_ROLES, ROLE_REGISTRAR, ROLE_RENEW } from "../src/lib/roles";
@@ -50,6 +60,7 @@ for (const chainId of [1, 11155111])
     });
     let process: ChildProcess;
     let ctx: StepCtx;
+    let forkBlock = 0n;
     const label = "subregistry-lab-fork-only";
     const rpc = async (method: string, params: unknown[]) => {
       const response = await fetch(url, {
@@ -171,6 +182,7 @@ for (const chainId of [1, 11155111])
       const finalized = await upstreamClient.getBlock({
         blockTag: "finalized",
       });
+      forkBlock = finalized.number;
       process = spawn(
         "anvil",
         [
@@ -239,7 +251,30 @@ for (const chainId of [1, 11155111])
       process?.kill();
     });
     it("deploys registry, resolver and reproducibly built registrar through the real factory", async () => {
+      ctx.setupNonce = "fork-reviewed-setup";
+      const predict = (label: string) =>
+        client.readContract({
+          address: network.addresses.VerifiableFactory,
+          abi: verifiableFactoryAbi,
+          functionName: "predictProxyAddress",
+          args: [account.address, deriveSalt(label, ctx.setupNonce)],
+        });
+      const [userRegistry, resolver] = await Promise.all([
+        predict(ctx.parentLabel),
+        predict(`${ctx.parentLabel}-resolver`),
+      ]);
+      ctx.expectedAddresses = { userRegistry, resolver };
       ctx = await run(buildSetupSteps("standard-rentable", chainId));
+      expect(ctx.userRegistry?.toLowerCase()).toBe(userRegistry.toLowerCase());
+      expect(ctx.resolver?.toLowerCase()).toBe(resolver.toLowerCase());
+      expect(
+        await client.readContract({
+          address: ctx.resolver!,
+          abi: resolverAbi,
+          functionName: "getRecordId",
+          args: [namehash(`alice.${ctx.parentLabel}.eth`)],
+        }),
+      ).toBe(0n);
       expect(ctx.userRegistry).toBeDefined();
       expect(ctx.resolver).toBeDefined();
       expect(ctx.registrar).toBeDefined();
@@ -271,6 +306,129 @@ for (const chainId of [1, 11155111])
           universalResolverAddress: network.addresses.UniversalResolverV2,
         }),
       ).toBe(account.address);
+    });
+    it("inspects deployed registry labels and resolver records, including whole-bundle fallback and deleted keys", async () => {
+      const name = `alice.${label}.eth`;
+      // The fixtures are all deployed after the fork. Avoid querying upstream
+      // historical logs through Anvil (public RPCs reject those archive calls).
+      const inspectionClient: import("../src/lib/inspection").InspectionClient =
+        {
+          ...client,
+          getLogs: ((parameters: { fromBlock?: bigint } = {}) =>
+            client.getLogs({
+              ...parameters,
+              fromBlock:
+                parameters.fromBlock && parameters.fromBlock > forkBlock
+                  ? parameters.fromBlock
+                  : forkBlock + 1n,
+            })) as typeof client.getLogs,
+          request: (async (parameters: {
+            method: string;
+            params?: unknown[];
+          }) => {
+            if (parameters.method === "eth_getLogs") {
+              const filter = parameters.params![0] as { fromBlock: string };
+              if (BigInt(filter.fromBlock) <= forkBlock)
+                parameters = {
+                  ...parameters,
+                  params: [{ ...filter, fromBlock: toHex(forkBlock + 1n) }],
+                };
+            }
+            return client.request(parameters as never);
+          }) as typeof client.request,
+        };
+      const state = await readInspection(
+        inspectionClient,
+        { kind: "label", registry: ctx.userRegistry!, label: "alice" },
+        chainId,
+        account.address,
+      );
+      expect(
+        state.state?.ok && state.state.value.latestOwner.toLowerCase(),
+      ).toBe(account.address.toLowerCase());
+      expect(state.state?.ok && state.state.value.status).toBe(2);
+      const setters = parseAbi([
+        "function setText(bytes name,string key,string value)",
+        "function setAddress(bytes name,uint256 coinType,bytes value)",
+      ]);
+      const write = async (
+        functionName: "setText" | "setAddress",
+        args: readonly unknown[],
+      ) => {
+        const hash = await wallet.writeContract({
+          address: ctx.resolver!,
+          abi: setters as Abi,
+          functionName,
+          args,
+        });
+        await client.waitForTransactionReceipt({ hash });
+      };
+      const dns = toHex(packetToBytes(name));
+      await write("setText", [dns, "custom-key", "current value"]);
+      await write("setText", [dns, "deleted-key", "old value"]);
+      await write("setText", [dns, "deleted-key", ""]);
+      await write("setText", ["0x00", "default-only", "default value"]);
+      await write("setAddress", ["0x00", 2147483648n, account.address]);
+      const inspect = (fullName: string) =>
+        readInspection(
+          inspectionClient,
+          { kind: "name", resolver: ctx.resolver!, name: fullName },
+          chainId,
+        );
+      const direct = await inspect(name);
+      expect(direct.compatible).toBe(true);
+      expect(direct.source).toBe("direct");
+      expect(direct.history?.complete).toBe(true);
+      expect(
+        direct.records?.find((record) => record.profile.key === "custom-key")
+          ?.value,
+      ).toBe("current value");
+      expect(
+        direct.records?.find((record) => record.profile.key === "deleted-key")
+          ?.unset,
+      ).toBe(true);
+      expect(
+        direct.records?.some((record) => record.profile.key === "default-only"),
+      ).toBe(false);
+      const fallback = await inspect(`unwritten.${label}.eth`);
+      expect(fallback.source).toBe("default");
+      const ethFallback = await client.readContract({
+        address: ctx.resolver!,
+        abi: resolverAbi,
+        functionName: "resolve",
+        args: [
+          toHex(packetToBytes(`unwritten.${label}.eth`)),
+          encodeFunctionData({
+            abi: profileAbi,
+            functionName: "addr",
+            args: [namehash(`unwritten.${label}.eth`), 60n],
+          }),
+        ],
+      });
+      expect(
+        decodeFunctionResult({
+          abi: profileAbi,
+          functionName: "addr",
+          data: ethFallback,
+        }).toLowerCase(),
+      ).toBe(account.address.toLowerCase());
+
+      expect(
+        fallback.records?.find(
+          (record) => record.profile.key === "default-only",
+        )?.value,
+      ).toBe("default value");
+      expect(
+        fallback.records?.find(
+          (record) =>
+            record.profile.kind === "address" && record.profile.key === "60",
+        )?.unset,
+      ).toBe(true);
+      expect(
+        fallback.records
+          ?.find((record) => record.profile.key === "2147483648")
+          ?.value?.toLowerCase(),
+      ).toBe(account.address.toLowerCase());
     });
     it("charges the configured token and renews an existing paid name", async () => {
       const tokenAbi = parseAbi([
@@ -375,7 +533,12 @@ for (const chainId of [1, 11155111])
     });
     it("recovers a deployment after refresh without deploying a second proxy", async () => {
       const states: Record<string, StepState> = {};
-      const isolated = { ...ctx, userRegistry: undefined };
+      const isolated = {
+        ...ctx,
+        userRegistry: undefined,
+        setupNonce: "isolated-recovery",
+        expectedAddresses: undefined,
+      };
       const plan = buildSetupSteps("fully-controlled", chainId).slice(0, 1);
       await expect(run(plan, isolated, states, true)).rejects.toThrow(
         "Simulated refresh",

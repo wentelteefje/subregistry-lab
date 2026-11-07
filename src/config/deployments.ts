@@ -18,7 +18,6 @@ const mainnetDeployment = {
   },
   "registryDeployBlock": 26105621,
   "factoryDeployBlock": 26105299,
-  "logScanRpc": "https://ethereum-rpc.publicnode.com",
   "previousRegistryImplementations": ["0x664814f5bd5e6e617742029fa781bbee6c230dc0", "0x75ff9adbcfce2469b097ac68f6ae650eae1351bb"],
   "canMint": false
 } as const;
@@ -39,7 +38,6 @@ const sepoliaDeployment = {
   },
   "registryDeployBlock": 11820399,
   "factoryDeployBlock": 11820318,
-  "logScanRpc": "https://sepolia.gateway.tenderly.co",
   "previousRegistryImplementations": ["0xa80338aaa8d23831cea25e858d1774534abb0263"],
   "canMint": true
 } as const;

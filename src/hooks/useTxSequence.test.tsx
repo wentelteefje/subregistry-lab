@@ -1,7 +1,15 @@
 import { useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import type { TransactionReceipt } from "viem";
+import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  type TransactionReceipt,
+} from "viem";
+import { verifiableFactoryAbi } from "../config/abis";
+import { getDeployment } from "../config/deployments";
+import { prepareTransaction } from "../lib/sequence";
+import { buildSetupSteps } from "../lib/steps";
 import {
   labReducer,
   type LabState,
@@ -17,6 +25,8 @@ const harness = vi.hoisted(() => ({
     chain: { id: 1 },
     readContract: vi.fn(),
     getBlockNumber: vi.fn(),
+    getCode: vi.fn(),
+    getLogs: vi.fn(),
     simulateContract: vi.fn(),
     getTransaction: vi.fn(),
     waitForTransactionReceipt: vi.fn(),
@@ -122,6 +132,8 @@ beforeEach(() => {
     { type: "select-name", wallet: account, parentLabel: "lab", chainId: 1 },
   );
   harness.client.readContract.mockReset().mockResolvedValue(0n);
+  harness.client.getCode.mockReset().mockResolvedValue("0x");
+  harness.client.getLogs.mockReset().mockResolvedValue([]);
   harness.client.getBlockNumber.mockReset().mockResolvedValue(12n);
   harness.wallet.request.mockReset().mockResolvedValue("0x5");
   harness.client.simulateContract
@@ -279,5 +291,143 @@ describe("useTxSequence lifecycle", () => {
     });
     expect(harness.wallet.writeContract).toHaveBeenCalledTimes(2);
     expect(harness.client.waitForTransactionReceipt).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("reviewed setup deployment recovery", () => {
+  async function recoveredDeployment(
+    mismatch = false,
+    override?: () => void | Promise<void>,
+  ) {
+    const network = getDeployment(1);
+    const predicted = "0x2222222222222222222222222222222222222222" as const;
+    const context = {
+      ...ctx,
+      setupNonce: "review-recovery",
+      expectedAddresses: { userRegistry: predicted },
+    };
+    const deploy = buildSetupSteps("fully-controlled", 1)[0];
+    const action = deploy.build(context);
+    if (action.type !== "write") throw new Error("expected factory call");
+    const salt = action.args[1] as bigint;
+    const tx = prepareTransaction(action, account, 5);
+    harness.client.readContract.mockImplementation(async ({ functionName }) =>
+      functionName === "predictProxyAddress" ? predicted : true,
+    );
+    harness.client.getCode.mockResolvedValue("0x6000");
+    harness.client.getLogs.mockResolvedValue([
+      {
+        transactionHash: hash,
+        args: {
+          sender: account,
+          salt,
+          implementation: network.addresses.UserRegistryImpl,
+          proxyAddress: predicted,
+        },
+      },
+    ]);
+    harness.client.getTransaction.mockResolvedValue({
+      ...tx,
+      input: mismatch ? "0x1234" : tx.input,
+      value: 0n,
+    });
+    harness.client.getBlockNumber.mockResolvedValue(27000000n);
+    harness.client.waitForTransactionReceipt.mockResolvedValue({
+      ...receipt,
+      logs: [
+        {
+          address: network.addresses.VerifiableFactory,
+          topics: encodeEventTopics({
+            abi: verifiableFactoryAbi,
+            eventName: "ProxyDeployed",
+            args: { sender: account, proxyAddress: predicted },
+          }),
+          data: encodeAbiParameters(
+            [{ type: "uint256" }, { type: "address" }],
+            [salt, network.addresses.UserRegistryImpl],
+          ),
+        },
+      ],
+    });
+    await override?.();
+    await mount();
+    let result;
+    await act(async () => {
+      result = await current.run([deploy], context);
+    });
+    return { result, predicted };
+  }
+  it("recovers a mined factory request whose hash was lost without opening the wallet again", async () => {
+    const { result, predicted } = await recoveredDeployment();
+    expect(result).toMatchObject({ userRegistry: predicted });
+    expect(harness.wallet.writeContract).not.toHaveBeenCalled();
+    expect(harness.client.simulateContract).not.toHaveBeenCalled();
+  });
+  it("refuses to adopt code when the original calldata does not match", async () => {
+    const { result } = await recoveredDeployment(true);
+    expect(result).toBeUndefined();
+    expect(current.error).toContain("does not match");
+    expect(harness.wallet.writeContract).not.toHaveBeenCalled();
+  });
+  it("sends normally when no code exists at the predicted address", async () => {
+    const { result, predicted } = await recoveredDeployment(false, () => {
+      harness.client.getCode.mockResolvedValue("0x");
+    });
+    expect(result).toMatchObject({ userRegistry: predicted });
+    expect(harness.wallet.writeContract).toHaveBeenCalledTimes(1);
+    expect(harness.client.getLogs).not.toHaveBeenCalled();
+  });
+  it("halts when code exists but no matching deployment log can be recovered", async () => {
+    const { result } = await recoveredDeployment(false, () => {
+      harness.client.getLogs.mockResolvedValue([]);
+    });
+    expect(result).toBeUndefined();
+    expect(current.error).toContain("could not be recovered");
+    expect(harness.wallet.writeContract).not.toHaveBeenCalled();
+  });
+  it("stops on prediction transport failure before opening the wallet", async () => {
+    const { result } = await recoveredDeployment(false, () => {
+      harness.client.readContract.mockRejectedValueOnce(
+        new Error("RPC offline"),
+      );
+    });
+    expect(result).toBeUndefined();
+    expect(current.error).toContain("RPC offline");
+    expect(harness.wallet.writeContract).not.toHaveBeenCalled();
+  });
+  for (const change of [
+    { from: "0x5555555555555555555555555555555555555555" },
+    { value: 1n },
+  ])
+    it(`rejects a recovered transaction with a different ${"from" in change ? "sender" : "ETH value"}`, async () => {
+      const { result } = await recoveredDeployment(false, async () => {
+        const original = await harness.client.getTransaction();
+        harness.client.getTransaction.mockResolvedValue({
+          ...original,
+          ...change,
+        });
+      });
+      expect(result).toBeUndefined();
+      expect(current.error).toContain("does not match");
+      expect(harness.wallet.writeContract).not.toHaveBeenCalled();
+    });
+  it("shows one wallet request after explicit run and waits for its receipt before the next", async () => {
+    let complete!: (value: TransactionReceipt) => void;
+    const pending = new Promise<TransactionReceipt>((resolve) => {
+      complete = resolve;
+    });
+    harness.client.waitForTransactionReceipt.mockReturnValueOnce(pending);
+    await mount();
+    expect(harness.wallet.writeContract).not.toHaveBeenCalled();
+    let running!: ReturnType<SequenceHandle["run"]>;
+    await act(async () => {
+      running = current.run([step("first"), step("second")], ctx);
+    });
+    expect(harness.wallet.writeContract).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      complete(receipt);
+      await running;
+    });
+    expect(harness.wallet.writeContract).toHaveBeenCalledTimes(2);
   });
 });

@@ -4,11 +4,15 @@ import { usePublicClient } from "wagmi";
 import { TransactionReceiptNotFoundError, isHash, type Address } from "viem";
 import { useLab } from "../state/LabContext";
 import { isPendingTransaction } from "../state/labSession";
+import { getDeployment } from "../config/deployments";
 import { useDeployment } from "../hooks/useDeployment";
 import { useIsReady } from "./ChainGuard";
+import { recoveredRegistryAdoption } from "../lib/registrySelection";
 import { recoverPending } from "../lib/recovery";
 import { acquireRun, isRunning, subscribeRuns } from "../lib/inflight";
 import { etherscanTx } from "../lib/links";
+import { TransactionError } from "./TransactionError";
+import { errorSummary } from "../lib/errors";
 
 export function PendingTransactions({
   onRecovered,
@@ -42,6 +46,15 @@ export function PendingTransactions({
                 if (result.confirmed) {
                   void queryClient.invalidateQueries();
                   onRecovered?.();
+                }
+                if (sequenceId === "relink") {
+                  const adoption = recoveredRegistryAdoption(
+                    result,
+                    session.parentLabel,
+                    getDeployment(session.chainId),
+                  );
+                  if (adoption)
+                    dispatch({ ...adoption, sessionKey: state.activeKey });
                 }
                 if (result.context) {
                   const {
@@ -155,7 +168,7 @@ function PendingTransaction({
     }
   };
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+    <div className="flex min-w-0 max-w-full flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
       <strong>Pending: {step.title ?? id}</strong>
       <a
         href={etherscanTx(step.txHash!, network.id)}
@@ -165,9 +178,20 @@ function PendingTransaction({
       >
         View transaction
       </a>
-      <p>
-        {step.detail ?? "Check its receipt before starting another operation."}
-      </p>
+      {step.detail || step.technicalDetail ? (
+        step.status === "failed" ? (
+          <TransactionError
+            error={step.technicalDetail ?? step.detail!}
+            state={step}
+          />
+        ) : (
+          <p className="break-words [overflow-wrap:anywhere]">
+            {errorSummary(step.detail ?? step.technicalDetail, step)}
+          </p>
+        )
+      ) : (
+        <p>Check its receipt before starting another operation.</p>
+      )}
       <label>
         Replacement hash (if sped up or cancelled)
         <input
@@ -187,11 +211,7 @@ function PendingTransaction({
           ? "Waiting for current operation…"
           : "Check / recover transaction"}
       </button>
-      {error && (
-        <p role="alert" className="text-red-700">
-          {error}
-        </p>
-      )}
+      {error && <TransactionError error={error} state={step} />}
     </div>
   );
 }

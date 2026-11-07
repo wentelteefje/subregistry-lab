@@ -4,12 +4,19 @@
  * rows derived from content, so snapshots are stable.
  */
 
+import { isAddress } from "viem";
 import type { DiagramEdge, DiagramNode, DiagramState } from "../diagram/types";
+import type { Preset } from "./presets";
 import { decomposeBitmap } from "./roles";
 
 export type SetupView = {
   parentName: string; // e.g. "nick.eth"
   parentOwner?: string;
+  parentNote?: string;
+  inheritedResolver?: string;
+  resolverAncestor?: string;
+  /** A labelled configuration schematic, never on-chain state. */
+  illustrative?: boolean;
   /** Real address, or a short placeholder like "new" for planned contracts. */
   userRegistry?: string;
   registrar?: string;
@@ -19,8 +26,12 @@ export type SetupView = {
   registrarRoles?: bigint;
   /** True once dangerous root roles were revoked. */
   locked?: boolean;
+  /** Verified direct record ids per resolver and name; empty name is the default record. */
+  resolverRecords?: Record<string, Record<string, string | null>>;
   subnames?: {
     label: string;
+    ownerLabel?: string;
+    status?: "reserved";
     neverExpires?: boolean;
     /** The subname's own resolver pointer (undefined/zero = none). */
     resolver?: string;
@@ -38,7 +49,8 @@ export function classifyResolver(
 ): ResolverKind {
   const res = subResolver?.toLowerCase();
   if (!res || res === ZERO) return "none";
-  if (defaultResolver && res === defaultResolver.toLowerCase()) return "default";
+  if (defaultResolver && res === defaultResolver.toLowerCase())
+    return "default";
   return "foreign";
 }
 
@@ -54,222 +66,365 @@ function displayAddr(value?: string): string {
   return value;
 }
 
-// Deterministic grid: enough spacing that frames and edge labels never
-// collide, but compact enough that fitView can hold multi-subname setups.
-// farRight clears even long subname labels (sub nodes start at mid+180 and
-// grow with the name), so foreign resolver boxes never sit on top of them.
-const COL = { left: 0, mid: 400, right: 780, farRight: 1060 };
-const ROW = { top: 0, main: 175, subStart: 300 };
-const SUB_STEP = 60;
-// Resolver boxes are taller than a subname row: stack them at least this far
-// apart so adjacent foreign resolvers can't overlap each other.
-const FOREIGN_STEP = 120;
-
+/** Contract boundaries contain local token labels or fully qualified resolver names. */
 export function toDiagram(setup: SetupView): DiagramState {
-  const nodes: DiagramNode[] = [];
-  const edges: DiagramEdge[] = [];
-
-  // .eth registry (top root)
-  nodes.push({
-    id: "eth-registry",
-    type: "root",
-    position: { x: COL.left, y: ROW.top },
-    data: { label: ".eth registry", variant: "blue" },
-  });
-
-  // parent name: indented right of the root so the elbow edge's left swing
-  // (~20px before the left handle) stays inside the canvas
-  nodes.push({
-    id: "parent",
-    type: "action",
-    position: { x: COL.left + 48, y: ROW.main },
-    data: { label: setup.parentName, variant: "blue" },
-  });
-  edges.push({
-    id: "e-eth-parent",
-    source: "eth-registry",
-    target: "parent",
-    targetHandle: "left",
-  });
-
-  if (setup.userRegistry) {
-    nodes.push({
-      id: "user-registry",
+  const subnames = setup.subnames ?? [];
+  const parentWidth = Math.max(
+    200,
+    Math.min(680, setup.parentName.length * 9.5 + 48),
+  );
+  const registryX = parentWidth + 110;
+  const tokenSubtitle = (sub: NonNullable<SetupView["subnames"]>[number]) =>
+    sub.status === "reserved"
+      ? "reserved label"
+      : setup.illustrative
+        ? `token · owned by ${sub.ownerLabel ?? sub.label}${sub.neverExpires ? " · never expires" : ""}`
+        : classifyResolver(sub.resolver, setup.resolver) === "none"
+          ? "inherits ancestor resolver"
+          : "subname token";
+  const registryWidth = Math.max(
+    260,
+    Math.min(
+      560,
+      Math.max(
+        0,
+        ...subnames.map((sub) =>
+          Math.max(
+            (sub.label.length + (sub.neverExpires ? 2 : 0)) * 9 + 96,
+            tokenSubtitle(sub).length * 6 + 72,
+          ),
+        ),
+      ),
+    ),
+  );
+  const resolverX = registryX + registryWidth + 100;
+  const nodes: DiagramNode[] = [
+    {
+      id: "parent",
       type: "registry",
-      position: { x: COL.mid, y: ROW.main },
+      position: { x: 0, y: 0 },
+      style: { width: parentWidth },
       data: {
-        label: setup.locked ? "SUBNAME REGISTRY (LOCKED)" : "SUBNAME REGISTRY",
-        subtitle: displayAddr(setup.userRegistry),
+        label: setup.parentName,
+        subtitle: setup.parentNote ?? "your parent name",
       },
-    });
-    edges.push({
-      id: "e-parent-registry",
-      source: "parent",
-      target: "user-registry",
-      targetHandle: "left",
-      label: "subregistry",
-    });
-  }
-
-  if (setup.registrar && setup.userRegistry) {
-    const roleBadges = setup.registrarRoles
-      ? decomposeBitmap(setup.registrarRoles)
-          .filter((r) => !r.isAdmin)
-          .map((r) => r.short)
-          .join(" + ")
-      : "";
-    nodes.push({
-      id: "registrar",
-      type: "gateway",
-      position: { x: COL.mid + 60, y: ROW.top },
-      data: { label: "REGISTRAR", id: displayAddr(setup.registrar) },
-    });
-    edges.push({
-      id: "e-registrar-registry",
-      source: "registrar",
-      target: "user-registry",
-      targetHandle: "top",
-      label: roleBadges || undefined,
-    });
-  }
-
-  // Zero address means "no shared resolver": don't draw a node for it.
-  const sharedRes =
-    setup.resolver && setup.resolver.toLowerCase() !== ZERO ? setup.resolver : undefined;
-
-  // Classify subnames first: deviations relabel the aggregate records edge.
-  const subs = setup.subnames ?? [];
-  const kinds = subs.map((sub) => classifyResolver(sub.resolver, sharedRes));
-  const hasForeign = kinds.includes("foreign");
-
-  if (sharedRes) {
-    nodes.push({
-      id: "resolver",
-      type: "resolver",
-      position: { x: COL.right, y: ROW.main },
-      data: {
-        label: "Resolver",
-        owner: displayAddr(setup.parentOwner),
-        addr: displayAddr(sharedRes),
-      },
-    });
-    if (setup.userRegistry) {
-      // Subnames on the shared resolver keep their records here; once any
-      // subname deviates, the aggregate edge only covers the default group.
-      edges.push({
-        id: "e-registry-resolver",
-        source: "user-registry",
-        sourceHandle: "right",
-        target: "resolver",
-        targetHandle: "left",
-        label: hasForeign ? "default records" : "records",
-      });
-    }
-  }
-
-  // Foreign resolvers: one node per distinct address (capped), in their own
-  // column right of the subnames. Each aligns with the row of the first
-  // subname that uses it where possible, but never closer than FOREIGN_STEP
-  // to the previous one. Overflow shares a node.
-  const foreignNodes = new Map<string, string>(); // lowercased addr -> node id
-  const overflowAddrs = new Set<string>();
-  let nextForeignY = ROW.subStart;
-  const placeForeignY = (i: number): number => {
-    const y = Math.max(ROW.subStart + SUB_STEP * i, nextForeignY);
-    nextForeignY = y + FOREIGN_STEP;
-    return y;
-  };
-
-  subs.forEach((sub, i) => {
-    const id = `sub-${sub.label}`;
-    const kind = kinds[i];
-    const marker = sub.neverExpires ? " ∞" : kind === "none" ? " ∅" : "";
-    nodes.push({
-      id,
-      type: "action",
-      // Right of the registry's bottom handle: edges route down-then-right
-      // into the left handle without S-bends.
-      position: { x: COL.mid + 180, y: ROW.subStart + SUB_STEP * i },
-      data: {
-        label: `${sub.label}.${setup.parentName}${marker}`,
-        variant: "blue",
-      },
-    });
-    edges.push({
-      id: `e-registry-${id}`,
-      source: "user-registry",
-      sourceHandle: "bottom",
-      target: id,
-      targetHandle: "left",
-    });
-
-    if (kind === "foreign") {
-      const addr = sub.resolver!.toLowerCase();
-      let nodeId = foreignNodes.get(addr);
-      if (!nodeId) {
-        if (foreignNodes.size < MAX_FOREIGN_RESOLVER_NODES) {
-          nodeId = `resolver-${addr}`;
-          foreignNodes.set(addr, nodeId);
-          nodes.push({
-            id: nodeId,
-            type: "resolver",
-            position: { x: COL.farRight, y: placeForeignY(i) },
-            data: { label: "Resolver", addr: displayAddr(sub.resolver), foreign: true },
-          });
-        } else {
-          // beyond the cap: distinct addresses share one aggregate node
-          nodeId = "resolver-more";
-          overflowAddrs.add(addr);
-          if (!nodes.some((n) => n.id === nodeId)) {
-            nodes.push({
-              id: nodeId,
-              type: "resolver",
-              position: { x: COL.farRight, y: placeForeignY(i) },
-              data: { label: "More resolvers", addr: "", foreign: true },
-            });
-          }
-        }
-      }
-      // Several subnames can share one foreign resolver; labeling every
-      // converging edge piles "records" labels on top of each other, so only
-      // the first edge into each node carries it.
-      const alreadyLabeled = edges.some(
-        (e) => e.target === nodeId && e.label === "records",
-      );
-      edges.push({
-        id: `e-${id}-resolver`,
-        source: id,
-        target: nodeId,
-        targetHandle: "left",
-        label: alreadyLabeled ? undefined : "records",
-      });
-    }
-  });
-
-  if (overflowAddrs.size > 0) {
-    const moreNode = nodes.find((n) => n.id === "resolver-more");
-    if (moreNode) {
-      (moreNode.data as { label: string }).label = `+${overflowAddrs.size} more`;
-    }
-  }
-
-  // The shared resolver serves the parent name plus every subname that either
-  // points at it or has no resolver at all: UniversalResolver's findResolver
-  // keeps the nearest ancestor resolver when a label's own pointer is zero
-  // (LibRegistry.findResolver), so resolver-less subnames fall back to it.
-  // There are no drawn edges for these relations; record them as affinities
-  // so hover highlighting can still connect them.
+    },
+  ];
+  const edges: DiagramEdge[] = [];
   const affinities: Record<string, string[]> = {};
   const relate = (a: string, b: string) => {
     (affinities[a] ??= []).push(b);
     (affinities[b] ??= []).push(a);
   };
-  if (sharedRes) {
-    relate("resolver", "parent");
-    subs.forEach((sub, i) => {
-      if (kinds[i] !== "foreign") relate("resolver", `sub-${sub.label}`);
+  const subs = setup.subnames ?? [];
+  const hasRegistry = Boolean(setup.userRegistry && subs.length);
+  if (hasRegistry) {
+    nodes.push({
+      id: "user-registry",
+      type: "group",
+      position: { x: registryX, y: 0 },
+      style: {
+        width: registryWidth,
+        height: Math.max(155, subs.length * 90 + 75),
+        background: "transparent",
+        border: "none",
+        padding: 0,
+      },
+      data: {
+        label: setup.illustrative
+          ? "USERREGISTRY · EXAMPLE"
+          : setup.locked
+            ? "USERREGISTRY · LOCKED"
+            : "USERREGISTRY CONTRACT",
+        subtitle: displayAddr(setup.userRegistry),
+        inspection:
+          !setup.illustrative &&
+          isAddress(setup.userRegistry!, { strict: false })
+            ? { kind: "registry", address: setup.userRegistry as `0x${string}` }
+            : undefined,
+      },
+    });
+    edges.push({
+      id: "e-parent-registry",
+      source: "parent",
+      sourceHandle: "right",
+      target: "user-registry",
+      targetHandle: "left",
+      label: "subregistry",
+    });
+    subs.forEach((sub, index) => {
+      nodes.push({
+        id: `sub-${sub.label}`,
+        type: "action",
+        parentId: "user-registry",
+        extent: "parent",
+        position: { x: 24, y: 65 + index * 90 },
+        style: { width: registryWidth - 48 },
+        data: {
+          label: `${sub.label}${sub.neverExpires ? " ∞" : ""}`,
+          note: tokenSubtitle(sub),
+          inspection:
+            !setup.illustrative &&
+            isAddress(setup.userRegistry!, { strict: false })
+              ? {
+                  kind: "label",
+                  registry: setup.userRegistry as `0x${string}`,
+                  label: sub.label,
+                }
+              : undefined,
+        },
+      });
+      relate("user-registry", `sub-${sub.label}`);
+    });
+  }
+  if (setup.registrar && hasRegistry) {
+    nodes.push({
+      id: "registrar",
+      type: "gateway",
+      position: { x: registryX + registryWidth / 2 - 56, y: -160 },
+      data: {
+        label: "REGISTRAR",
+        id: setup.illustrative ? "example" : displayAddr(setup.registrar),
+      },
+    });
+    const roles = setup.registrarRoles
+      ? decomposeBitmap(setup.registrarRoles)
+          .filter((r) => !r.isAdmin)
+          .map((r) => r.short)
+          .join(" + ")
+      : undefined;
+    edges.push({
+      id: "e-registrar-registry",
+      source: "registrar",
+      target: "user-registry",
+      targetHandle: "top",
+      label: roles,
     });
   }
 
-  return { nodes, edges, affinities };
+  const isUsableResolver = (address?: string): address is string =>
+    Boolean(
+      address &&
+        address.toLowerCase() !== ZERO &&
+        (setup.illustrative || isAddress(address, { strict: false })),
+    );
+  const candidate = setup.resolver ?? setup.inheritedResolver;
+  const shared = isUsableResolver(candidate) ? candidate : undefined;
+  const hasExplicitSharedPointer =
+    hasRegistry &&
+    subs.some(
+      (sub) =>
+        isUsableResolver(sub.resolver) &&
+        classifyResolver(sub.resolver, shared) === "default",
+    );
+  const served = new Map<
+    string,
+    { address: string; names: string[]; shared: boolean }
+  >();
+  if (shared)
+    served.set(shared.toLowerCase(), {
+      address: shared,
+      names: setup.illustrative ? [] : [setup.parentName],
+      shared: true,
+    });
+  const foreignIds = new Map<string, string>();
+  const overflow = new Set<string>();
+  for (const sub of hasRegistry ? subs : []) {
+    const kind = classifyResolver(sub.resolver, shared);
+    const address = kind === "foreign" ? sub.resolver! : shared;
+    if (!isUsableResolver(address)) continue;
+    const key = address.toLowerCase();
+    if (!served.has(key)) {
+      if (foreignIds.size >= MAX_FOREIGN_RESOLVER_NODES) {
+        overflow.add(key);
+        continue;
+      }
+      foreignIds.set(key, `resolver-${key}`);
+      served.set(key, { address, names: [], shared: false });
+    }
+    served.get(key)!.names.push(`${sub.label}.${setup.parentName}`);
+  }
+  let nextY = 0;
+  for (const [key, group] of served) {
+    const id = group.shared ? "resolver" : foreignIds.get(key)!;
+    const records = setup.resolverRecords?.[key];
+    const defaultId = records?.[""];
+    const hasVerifiedRecords = Object.values(records ?? {}).some(
+      (record) => record && record !== "0",
+    );
+    // A live pointer and its served name remain visible before any records exist.
+    // Keep unrelated empty shared frames out of the initial parent-only view.
+    if (
+      !setup.illustrative &&
+      group.shared &&
+      !hasExplicitSharedPointer &&
+      !hasVerifiedRecords
+    )
+      continue;
+    const nameWidth = Math.max(
+      260,
+      Math.min(
+        640,
+        Math.max(0, ...group.names.map((name) => name.length)) * 9 + 24,
+      ),
+    );
+    const width = nameWidth + 40;
+    const height = Math.max(group.names.length, 1) * 90 + 75;
+    nodes.push({
+      id,
+      type: "resolver",
+      position: { x: resolverX, y: nextY },
+      style: { width, height },
+      data: {
+        label: setup.illustrative
+          ? "RESOLVER · EXAMPLE"
+          : group.shared
+            ? "RESOLVER CONTRACT"
+            : "OWN RESOLVER CONTRACT",
+        address: displayAddr(group.address),
+        inspection: !setup.illustrative
+          ? { kind: "resolver", address: group.address as `0x${string}` }
+          : undefined,
+        foreign: !group.shared,
+        note: setup.illustrative
+          ? "Full names"
+          : hasVerifiedRecords
+            ? "Known names only · record fields not enumerated"
+            : "Linked names · no record data verified",
+      },
+    });
+    nextY += height + 48;
+    group.names.forEach((name, index) => {
+      const direct = records?.[name];
+      const fallback =
+        direct === "0" && Boolean(defaultId && defaultId !== "0");
+      const nameId = `${id}-name-${index}`;
+      nodes.push({
+        id: nameId,
+        type: "action",
+        parentId: id,
+        extent: "parent",
+        position: { x: 20, y: 78 + index * 90 },
+        style: { width: nameWidth },
+        data: {
+          label: name,
+          inspection: !setup.illustrative
+            ? { kind: "name", resolver: group.address as `0x${string}`, name }
+            : undefined,
+          note: setup.illustrative
+            ? undefined
+            : direct === null
+              ? "record lookup unavailable"
+              : direct === undefined
+                ? "record link not read yet"
+                : direct === "0"
+                  ? fallback
+                    ? "uses default record"
+                    : "no direct record link"
+                  : "name link",
+        },
+      });
+      relate(id, nameId);
+    });
+    if (group.shared) {
+      edges.push({
+        id: "e-parent-resolver",
+        source: "parent",
+        sourceHandle: "right",
+        target: id,
+        targetHandle: "top",
+        ...(setup.inheritedResolver && !setup.resolver
+          ? { style: { strokeDasharray: "5 4" }, label: "ancestor resolver" }
+          : {}),
+        // The destination identifies this pointer; avoid crossing the registrar roles label.
+        type: "smoothstep",
+      });
+      relate(id, "parent");
+    }
+  }
+  if (overflow.size)
+    nodes.push({
+      id: "resolver-more",
+      type: "action",
+      position: { x: resolverX, y: nextY },
+      data: {
+        label: `+${overflow.size} more resolvers`,
+        note: "See each address in the subname list",
+      },
+    });
+  if (hasRegistry)
+    for (const sub of subs) {
+      const kind = classifyResolver(sub.resolver, shared);
+      const target =
+        kind === "foreign"
+          ? (foreignIds.get(sub.resolver!.toLowerCase()) ??
+            (overflow.has(sub.resolver!.toLowerCase())
+              ? "resolver-more"
+              : undefined))
+          : shared
+            ? "resolver"
+            : undefined;
+      if (!target) continue;
+      edges.push({
+        id: `e-sub-${sub.label}-resolver`,
+        source: `sub-${sub.label}`,
+        sourceHandle: "right",
+        target,
+        targetHandle: "left",
+        label: kind === "none" ? undefined : "resolver",
+        ...(kind === "none" ? { style: { strokeDasharray: "5 4" } } : {}),
+      });
+      relate(target, `sub-${sub.label}`);
+    }
+  const visible = new Set(nodes.map((node) => node.id));
+  return {
+    nodes,
+    edges: edges.filter(
+      (edge) => visible.has(edge.source) && visible.has(edge.target),
+    ),
+    affinities: Object.fromEntries(
+      Object.entries(affinities)
+        .filter(([id]) => visible.has(id))
+        .map(([id, related]) => [
+          id,
+          related.filter((other) => visible.has(other)),
+        ]),
+    ),
+  };
+}
+
+/** Only the review uses this hypothetical example. No real addresses or records. */
+export function buildConfigurationExample(
+  parentName: string,
+  preset: Preset,
+  resolverMode: "new" | "existing" | "none",
+): SetupView {
+  const resolver =
+    resolverMode === "none"
+      ? undefined
+      : resolverMode === "new"
+        ? "new resolver"
+        : "your existing resolver";
+  return {
+    illustrative: true,
+    parentName,
+    userRegistry: "new registry",
+    resolver,
+    registrar: preset.registrar ? "new registrar" : undefined,
+    registrarRoles: preset.registrar?.grantBitmap,
+    subnames: [
+      {
+        label: "alice",
+        ownerLabel: "Alice",
+        resolver,
+        neverExpires: preset.subnameDefaults.expiry === "max",
+      },
+      {
+        label: "bob",
+        ownerLabel: "Bob",
+        resolver,
+        neverExpires: preset.subnameDefaults.expiry === "max",
+      },
+    ],
+  };
 }

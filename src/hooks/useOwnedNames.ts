@@ -1,9 +1,8 @@
+import { publicRpcTransport } from "../lib/rpcPool";
 /**
  * Scans the ETHRegistry for .eth names owned by the connected wallet.
  *
- * Fast path: ONE full-range eth_getLogs per event type against the dedicated
- * scan RPC (Tenderly's public gateway accepts unbounded ranges). Fallback:
- * chunked scan (<=9999 blocks, drpc free-tier limit) via the wagmi transport.
+ * Public RPC pool with bounded, resumable adaptive scans for each event type.
  * Incremental via a per-wallet localStorage cache; current ownership is
  * confirmed on-chain afterwards (transfers away / expiry make log-derived
  * candidacy stale).
@@ -11,17 +10,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient } from "wagmi";
-import { createPublicClient, http, type Abi, type AbiEvent, type Address, type PublicClient, parseAbi } from "viem";
+import { createPublicClient, type Abi, type AbiEvent, type Address, type PublicClient, parseAbi } from "viem";
 
 import { registryAbi } from "../config/abis";
-import { LOG_CHUNK_SIZE, type Deployment } from "../config/deployments";
+import { type Deployment } from "../config/deployments";
 import { useDeployment } from "./useDeployment";
 import { classifyError } from "../lib/errors";
+import { scanRanges } from "../lib/scan";
 import {
   cacheCandidates,
   emptyCache,
   mergeCache,
-  planRanges,
   type LabelRegisteredLike,
   type ScanCache,
   type TransferSingleLike,
@@ -117,15 +116,14 @@ const registrarGraceAbi = parseAbi(["function GRACE_PERIOD() view returns (uint6
 
 export function useOwnedNames(wallet?: Address): OwnedNamesResult {
   const network = useDeployment();
-  const LOG_SCAN_RPC = network.logScanRpc;
   const client = usePublicClient();
   const scanClient = useMemo(
     () =>
       createPublicClient({
         chain: network.chain,
-        transport: http(LOG_SCAN_RPC),
+        transport: publicRpcTransport(network.id),
       }),
-    [network, LOG_SCAN_RPC],
+    [network],
   );
   const [names, setNames] = useState<OwnedName[]>([]);
   const [loading, setLoading] = useState(false);
@@ -151,44 +149,14 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
         const from = BigInt(cache.lastScannedBlock) + 1n;
 
         if (from <= head) {
-          try {
-            // Fast path: one full-range request per event type.
-            const span = await fetchSpan(scanClient, network, wallet, from, head);
-            cache = mergeCache(cache, span.transfers, span.labels, head);
+          await scanRanges(async (start, end) => {
+            const span = await fetchSpan(scanClient, network, wallet, start, end);
+            if (cancelled) throw Error("Log scan cancelled");
+            cache = mergeCache(cache, span.transfers, span.labels, end);
             saveCache(cache, network);
-            if (!cancelled) setProgress(0.9);
-          } catch {
-            // Fallback: chunked scan via the wagmi transport.
-            let chunk = LOG_CHUNK_SIZE;
-            let ranges = planRanges(from, head, chunk);
-            const total = ranges.length;
-            let index = 0;
-            while (index < ranges.length) {
-              const range = ranges[index];
-              try {
-                const span = await fetchSpan(
-                  client as PublicClient,
-                  network,
-                  wallet,
-                  range.fromBlock,
-                  range.toBlock,
-                );
-                cache = mergeCache(cache, span.transfers, span.labels, range.toBlock);
-                saveCache(cache, network);
-                index += 1;
-                if (!cancelled) setProgress(Math.min(0.9, (index / total) * 0.9));
-              } catch (err) {
-                const classified = classifyError(err);
-                if (classified.kind === "rpc-range" && chunk > 500n) {
-                  chunk = chunk / 2n;
-                  ranges = planRanges(range.fromBlock, head, chunk);
-                  index = 0;
-                } else {
-                  throw err;
-                }
-              }
-            }
-          }
+            setProgress(0.9);
+            return [];
+          }, from, head, () => cancelled);
         }
 
         // Confirm current ownership + expiry on-chain for each candidate.

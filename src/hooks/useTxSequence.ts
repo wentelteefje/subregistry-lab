@@ -8,7 +8,15 @@ import {
 } from "react";
 import { usePublicClient, useWalletClient } from "wagmi";
 import { getAccount } from "@wagmi/core";
-import type { Address } from "viem";
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
+  type Address,
+} from "viem";
+import { getDeployment } from "../config/deployments";
+import { verifiableFactoryAbi } from "../config/abis";
+import { scanRanges } from "../lib/scan";
 import { wagmiConfig } from "../wagmiConfig";
 import { classifyError } from "../lib/errors";
 import type { StepCtx, StepDef } from "../lib/steps";
@@ -145,6 +153,90 @@ export function useTxSequence(sequenceId: string): SequenceHandle {
             publicClient.readContract({ ...p, args: p.args as unknown[] }),
           getState: (id) => getSteps()[id],
           setState: setStep,
+          recover: async (action) => {
+            const network = getDeployment(chainId);
+            if (
+              !ctx.setupNonce ||
+              action.type !== "write" ||
+              action.functionName !== "deployProxy" ||
+              action.address.toLowerCase() !==
+                network.addresses.VerifiableFactory.toLowerCase()
+            )
+              return;
+            await assertIdentity();
+            const [implementation, salt] = action.args as [
+              Address,
+              bigint,
+              unknown,
+            ];
+            const predicted = await publicClient
+              .readContract({
+                address: action.address,
+                abi: verifiableFactoryAbi,
+                functionName: "predictProxyAddress",
+                args: [account, salt],
+              })
+              .catch((error: unknown) => {
+                const unsupported =
+                  error instanceof BaseError &&
+                  error.walk(
+                    (cause) =>
+                      cause instanceof ContractFunctionRevertedError ||
+                      cause instanceof ContractFunctionZeroDataError,
+                  );
+                if (!unsupported) throw error; // Transport failures must not become wallet prompts.
+                return undefined;
+              });
+            if (!predicted) return; // Unsupported prediction: retain receipt-based recovery.
+            const code = await publicClient.getCode({ address: predicted });
+            if (!code || code === "0x") return;
+            // A submitted request can land even if its hash never reached the app.
+            // Recover only a factory event AND the identical original request.
+            const event = verifiableFactoryAbi.find(
+              (item) => item.type === "event",
+            )!;
+            const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+            const logs = await scanRanges(
+              (fromBlock, toBlock) =>
+                publicClient.getLogs({
+                  address: action.address,
+                  event,
+                  args: { sender: account, proxyAddress: predicted },
+                  fromBlock,
+                  toBlock,
+                }),
+              BigInt(network.factoryDeployBlock),
+              head,
+              () => Boolean(signal?.aborted),
+            );
+            const log = logs.find(
+              (item) =>
+                item.args.salt === salt &&
+                item.args.implementation?.toLowerCase() ===
+                  implementation.toLowerCase() &&
+                item.args.proxyAddress?.toLowerCase() ===
+                  predicted.toLowerCase(),
+            );
+            if (!log?.transactionHash)
+              throw new Error(
+                "The reviewed deployment address already has code, but its deployment could not be recovered. Inspect factory history before continuing.",
+              );
+            const tx = await publicClient.getTransaction({
+              hash: log.transactionHash,
+            });
+            const expected = prepareTransaction(action, account, tx.nonce);
+            if (
+              tx.from.toLowerCase() !== account.toLowerCase() ||
+              tx.to?.toLowerCase() !== action.address.toLowerCase() ||
+              tx.input.toLowerCase() !== expected.input.toLowerCase() ||
+              tx.value !== 0n
+            )
+              throw new Error(
+                "Existing deployment does not match the reviewed request. Inspect factory history.",
+              );
+            await assertIdentity();
+            return { txHash: log.transactionHash, transaction: expected };
+          },
           prepare: async (action) => {
             await assertIdentity();
             const nonce = await getTransactionCount(walletClient, {

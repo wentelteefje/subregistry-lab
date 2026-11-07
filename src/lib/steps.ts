@@ -69,6 +69,9 @@ export type ReadFn = (params: {
 
 export type StepCtx = {
   chainId?: number;
+  setupNonce?: string;
+  expectedAddresses?: { userRegistry?: Address; resolver?: Address };
+  reviewedRequests?: Record<string, `0x${string}`>;
   account: Address;
   parentLabel: string;
   ownerInitBitmap: bigint;
@@ -100,7 +103,9 @@ export type StepDef = {
   preflight?: boolean;
   intentSeed?: string;
   targetName?: string;
+  registryDeployBlock?: string;
   capture?: "userRegistry" | "resolver" | "registrar" | "subResolver";
+  needs?: ("userRegistry" | "resolver" | "registrar")[];
   guard?: (read: ReadFn, ctx: StepCtx) => Promise<void>;
   verify?: (
     read: ReadFn,
@@ -119,6 +124,18 @@ function parseProxyAddress(receipt: TransactionReceipt): Address {
   });
   if (!log) throw new Error("ProxyDeployed event not found in receipt");
   return log.args.proxyAddress;
+}
+
+function checkedProxyAddress(
+  receipt: TransactionReceipt,
+  expected?: Address,
+): Address {
+  const actual = parseProxyAddress(receipt);
+  if (expected && actual.toLowerCase() !== expected.toLowerCase())
+    throw new Error(
+      `Deployed address ${actual} differs from reviewed address ${expected}. Stop and inspect the transaction.`,
+    );
+  return actual;
 }
 
 /** The main setup sequence for a preset. */
@@ -144,7 +161,7 @@ export function buildSetupSteps(
         functionName: "deployProxy",
         args: [
           deployments.UserRegistryImpl,
-          deriveSalt(ctx.parentLabel),
+          deriveSalt(ctx.parentLabel, ctx.setupNonce),
           encodeFunctionData({
             abi: userRegistryInitAbi,
             functionName: "initialize",
@@ -152,7 +169,12 @@ export function buildSetupSteps(
           }),
         ],
       }),
-      onReceipt: (receipt) => ({ userRegistry: parseProxyAddress(receipt) }),
+      onReceipt: (receipt, ctx) => ({
+        userRegistry: checkedProxyAddress(
+          receipt,
+          ctx.expectedAddresses?.userRegistry,
+        ),
+      }),
       verify: async (read, ctx) => {
         if (!ctx.userRegistry)
           return { ok: false, detail: "No registry address captured" };
@@ -185,7 +207,7 @@ export function buildSetupSteps(
         functionName: "deployProxy",
         args: [
           deployments.PermissionedResolverImpl,
-          deriveSalt(`${ctx.parentLabel}-resolver`),
+          deriveSalt(`${ctx.parentLabel}-resolver`, ctx.setupNonce),
           encodeFunctionData({
             abi: resolverInitAbi,
             functionName: "initialize",
@@ -193,7 +215,9 @@ export function buildSetupSteps(
           }),
         ],
       }),
-      onReceipt: (receipt) => ({ resolver: parseProxyAddress(receipt) }),
+      onReceipt: (receipt, ctx) => ({
+        resolver: checkedProxyAddress(receipt, ctx.expectedAddresses?.resolver),
+      }),
       verify: async (read, ctx) => {
         if (!ctx.resolver)
           return { ok: false, detail: "No resolver address captured" };
@@ -208,6 +232,7 @@ export function buildSetupSteps(
     },
     {
       id: "link",
+      needs: ["userRegistry"],
       title: "Point your name at the new registry",
       explain:
         "Tells the .eth registry that subnames of your name live in your new registry.",
@@ -237,6 +262,7 @@ export function buildSetupSteps(
     },
     {
       id: "set-parent-resolver",
+      needs: ["resolver"],
       title: "Point your name at the resolver",
       explain:
         "Sets your name's resolver on the .eth registry. The app treats whatever the parent points at as the setup's shared resolver, so this keeps parent and subnames in sync.",
@@ -268,6 +294,7 @@ export function buildSetupSteps(
     },
     {
       id: "set-parent",
+      needs: ["userRegistry"],
       title: "Record the parent pointer",
       explain:
         "Stores which name this registry serves (metadata used by explorers and indexers; resolution doesn't depend on it, but it can't be set anymore after locking).",
@@ -298,6 +325,7 @@ export function buildSetupSteps(
     },
     {
       id: "deploy-registrar",
+      needs: ["userRegistry"],
       capture: "registrar",
       intentSeed: "registrar",
       title: "Deploy the subname registrar",
@@ -323,6 +351,7 @@ export function buildSetupSteps(
     },
     {
       id: "grant-registrar",
+      needs: ["userRegistry", "registrar"],
       title: "Authorize the registrar",
       explain:
         "Allows the registrar contract to register and renew subnames in your registry.",
@@ -692,11 +721,13 @@ export function buildRelinkStep(params: {
   chainId?: number;
   parentLabel: string;
   registry: Address;
+  registryDeployBlock?: bigint;
 }): StepDef[] {
   const deployments = getDeployment(params.chainId).addresses;
   return [
     {
       id: "relink",
+      registryDeployBlock: params.registryDeployBlock?.toString(),
       title: `Re-link registry ${params.registry.slice(0, 6)}…`,
       explain:
         "Points your name back at this registry. Its subnames resolve again; the currently linked registry keeps its subnames and can be re-linked later too.",

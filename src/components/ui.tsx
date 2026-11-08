@@ -124,11 +124,13 @@ export function Section({
   step,
   title,
   enabled,
+  disabledMessage = "Complete the previous step first.",
   children,
 }: {
   step: number;
   title: string;
   enabled: boolean;
+  disabledMessage?: string;
   children: ReactNode;
 }) {
   return (
@@ -143,7 +145,7 @@ export function Section({
         </span>
         {title}
       </h2>
-      {enabled ? children : <p className="text-sm">Complete the previous step first.</p>}
+      {enabled ? children : <p className="text-sm">{disabledMessage}</p>}
     </section>
   );
 }

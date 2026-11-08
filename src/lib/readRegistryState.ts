@@ -13,6 +13,9 @@ export type Subname = {
   registered: boolean;
   status?: number;
   resolver: Address;
+  /** Inspect-only pointer check: zero = none, undefined = not checked/unknown. */
+  subregistry?: Address;
+  subregistryError?: string;
 };
 
 

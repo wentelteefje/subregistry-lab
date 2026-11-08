@@ -293,24 +293,21 @@ function LabWorkspace({
                   </button>
                 </p>
               )}
-              <Section step={1} title="Connect your wallet" enabled>
-                {isConnected ? (
-                  <p className="text-sm">
-                    Connected{ready ? ` and on ${network.chain.name}.` : "."}
-                  </p>
-                ) : (
-                  <p className="text-sm">
-                    Use the connect button in the top right corner.
-                  </p>
-                )}
-              </Section>
-
-              <Section step={2} title="Pick a name" enabled={ready}>
+              <Section
+                step={1}
+                title="Pick a name"
+                enabled={ready}
+                disabledMessage={
+                  isConnected
+                    ? `Please switch your wallet to ${network.chain.name} first.`
+                    : "Please connect your wallet first."
+                }
+              >
                 <NamePicker />
               </Section>
 
               <Section
-                step={3}
+                step={2}
                 title="Current setup"
                 enabled={ready && Boolean(session)}
               >
@@ -326,7 +323,7 @@ function LabWorkspace({
 
               {showConfigure && (
                 <Section
-                  step={4}
+                  step={3}
                   title="Choose a configuration"
                   enabled={ready}
                 >
@@ -335,7 +332,7 @@ function LabWorkspace({
               )}
 
               {showReview && (
-                <Section step={5} title="Review and execute" enabled={ready}>
+                <Section step={4} title="Review and execute" enabled={ready}>
                   {/* keyed by preset: switching presets remounts and drops in-memory step state */}
                   <ReviewPanel
                     key={`${session?.parentLabel}:${session?.presetId}`}

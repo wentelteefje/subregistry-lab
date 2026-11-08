@@ -12,6 +12,11 @@ import { normalize, packetToBytes } from "viem/ens";
 import type { Deployment } from "../config/deployments";
 import { registryAbi } from "../config/abis";
 import { readResolverRecords } from "./resolverRecords";
+import {
+  readNameResolution,
+  type NameResolution,
+  type ResolverName,
+} from "./resolverDiscovery";
 import { labelhashId } from "./names";
 import type { LabelState } from "./inspection";
 import { errorSummary } from "./errors";
@@ -66,6 +71,10 @@ export type ConfigurationSnapshot = {
   subnames?: Subname[];
   subnamesError?: string;
   recordLinksError?: string;
+  resolution?: NameResolution;
+  resolutionError?: string;
+  resolverNames?: ResolverName[];
+  resolverNamesError?: string;
   detail?: string;
   setup: SetupView;
 };
@@ -94,6 +103,58 @@ export async function readConfiguration(
     atName: name,
     atRegistry: registry,
     setup: { parentName: name, parentNote: "inspected name" },
+  };
+  const finish = async (snapshot: ConfigurationSnapshot) => {
+    try {
+      snapshot.resolution = await readNameResolution(
+        client,
+        name,
+        network,
+        block,
+      );
+      signal?.throwIfAborted();
+      const resolution = snapshot.resolution;
+      if (!resolution) return snapshot;
+      snapshot.resolutionError = resolution.error;
+      snapshot.effectiveResolver = resolution.resolver;
+      snapshot.resolverSource = resolution.foundAt;
+      if (
+        snapshot.status === "no-registry" ||
+        snapshot.status === "unregistered" ||
+        snapshot.status === "unsupported-registry"
+      ) {
+        snapshot.setup = {
+          parentName: name,
+          parentNote:
+            snapshot.status === "unsupported-registry"
+              ? "registry interface unavailable"
+              : "no registry entry",
+          inheritedResolver: resolution.resolver,
+          resolverAncestor: resolution.foundAt,
+        };
+      }
+      const diagramResolver =
+        snapshot.setup.resolver ?? snapshot.setup.inheritedResolver;
+      if (
+        diagramResolver &&
+        diagramResolver.toLowerCase() !== resolution.resolver.toLowerCase()
+      ) {
+        snapshot.resolutionError =
+          "Universal Resolver routing differs from the registry pointers shown. Resolver-linked names are listed separately and are not attached to this diagram.";
+      }
+      if (!resolution.permissioned) return snapshot;
+      const records = (snapshot.setup.resolverRecords ??= {});
+      const links = (records[resolution.resolver.toLowerCase()] ??= {});
+      if (resolution.recordId !== undefined) {
+        links[name] =
+          resolution.source === "linked" ? resolution.recordId : "0";
+        links[""] = resolution.defaultId ?? null;
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      snapshot.resolutionError = errorSummary(error);
+    }
+    return snapshot;
   };
   for (let index = 0; index < labels.length; index++) {
     signal?.throwIfAborted();
@@ -139,34 +200,34 @@ export async function readConfiguration(
             e instanceof ContractFunctionZeroDataError,
         )
       )
-        return {
+        return finish({
           ...result,
           status: "unsupported-registry",
           detail: errorSummary(error),
-        };
+        });
       throw error;
     }
     if (state.status === 0)
-      return {
+      return finish({
         ...result,
         status: "unregistered",
         state,
         effectiveResolver: resolver,
         resolverSource,
-      };
+      });
     if (pointer(ownResolver)) {
       resolver = ownResolver;
       resolverSource = atName;
     }
     if (index < labels.length - 1) {
       if (!pointer(subregistry))
-        return {
+        return finish({
           ...result,
           status: "no-registry",
           state,
           effectiveResolver: resolver,
           resolverSource,
-        };
+        });
       registry = subregistry;
       continue;
     }
@@ -204,11 +265,47 @@ export async function readConfiguration(
           signal,
           block,
           500,
-          (message) => { result.subnamesError = [result.subnamesError, message].filter(Boolean).join(" "); },
+          (message) => {
+            result.subnamesError = [result.subnamesError, message]
+              .filter(Boolean)
+              .join(" ");
+          },
         );
       } catch (error) {
         signal?.throwIfAborted();
         result.subnamesError = errorSummary(error);
+      }
+      // Only inspect pointers here; child registries are never scanned until
+      // the user navigates into that label. Playground reads remain unchanged.
+      const currentLabels = (result.subnames ?? []).filter(
+        (sub) => sub.registered || sub.status === 1,
+      );
+      for (let offset = 0; offset < currentLabels.length; offset += 100) {
+        signal?.throwIfAborted();
+        const batch = currentLabels.slice(offset, offset + 100);
+        try {
+          const pointers = await client.multicall({
+            allowFailure: true,
+            blockNumber: block,
+            batchSize: 0,
+            contracts: batch.map((sub) => ({
+              address: result.childRegistry!,
+              abi: registryAbi,
+              functionName: "getSubregistry" as const,
+              args: [sub.label] as const,
+            })),
+          });
+          batch.forEach((sub, index) => {
+            const value = pointers[index];
+            if (value.status === "success") sub.subregistry = value.result;
+            else sub.subregistryError = errorSummary(value.error);
+          });
+        } catch (error) {
+          signal?.throwIfAborted();
+          batch.forEach((sub) => {
+            sub.subregistryError = errorSummary(error);
+          });
+        }
       }
       result.setup.subnames = (result.subnames ?? [])
         .filter((sub) => sub.registered || sub.status === 1)
@@ -217,6 +314,7 @@ export async function readConfiguration(
           status: sub.status === 1 ? ("reserved" as const) : undefined,
           neverExpires: sub.neverExpires,
           resolver: sub.resolver,
+          childRegistry: Boolean(sub.subregistry && pointer(sub.subregistry)),
         }));
     } else result.subnames = [];
   }
@@ -237,5 +335,5 @@ export async function readConfiguration(
     signal?.throwIfAborted();
     result.recordLinksError = errorSummary(error);
   }
-  return result;
+  return finish(result);
 }

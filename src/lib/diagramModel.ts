@@ -28,11 +28,14 @@ export type SetupView = {
   locked?: boolean;
   /** Verified direct record ids per resolver and name; empty name is the default record. */
   resolverRecords?: Record<string, Record<string, string | null>>;
+  /** Verified names from resolver history, independent of registry labels. */
+  resolverNames?: string[];
   subnames?: {
     label: string;
     ownerLabel?: string;
     status?: "reserved";
     neverExpires?: boolean;
+    childRegistry?: boolean;
     /** The subname's own resolver pointer (undefined/zero = none). */
     resolver?: string;
   }[];
@@ -74,14 +77,17 @@ export function toDiagram(setup: SetupView): DiagramState {
     Math.min(680, setup.parentName.length * 9.5 + 48),
   );
   const registryX = parentWidth + 110;
-  const tokenSubtitle = (sub: NonNullable<SetupView["subnames"]>[number]) =>
-    sub.status === "reserved"
-      ? "reserved label"
-      : setup.illustrative
-        ? `token · owned by ${sub.ownerLabel ?? sub.label}${sub.neverExpires ? " · never expires" : ""}`
-        : classifyResolver(sub.resolver, setup.resolver) === "none"
-          ? "inherits ancestor resolver"
-          : "subname token";
+  const tokenSubtitle = (sub: NonNullable<SetupView["subnames"]>[number]) => {
+    const text =
+      sub.status === "reserved"
+        ? "reserved label"
+        : setup.illustrative
+          ? `token · owned by ${sub.ownerLabel ?? sub.label}${sub.neverExpires ? " · never expires" : ""}`
+          : classifyResolver(sub.resolver, setup.resolver) === "none"
+            ? "inherits ancestor resolver"
+            : "subname token";
+    return `${text}${sub.childRegistry ? " · child registry ↳" : ""}`;
+  };
   const registryWidth = Math.max(
     260,
     Math.min(
@@ -97,7 +103,10 @@ export function toDiagram(setup: SetupView): DiagramState {
       ),
     ),
   );
-  const resolverX = registryX + registryWidth + 100;
+  const resolverX =
+    setup.userRegistry && subnames.length
+      ? registryX + registryWidth + 100
+      : parentWidth + 100;
   const nodes: DiagramNode[] = [
     {
       id: "parent",
@@ -205,8 +214,8 @@ export function toDiagram(setup: SetupView): DiagramState {
   const isUsableResolver = (address?: string): address is string =>
     Boolean(
       address &&
-        address.toLowerCase() !== ZERO &&
-        (setup.illustrative || isAddress(address, { strict: false })),
+      address.toLowerCase() !== ZERO &&
+      (setup.illustrative || isAddress(address, { strict: false })),
     );
   const candidate = setup.resolver ?? setup.inheritedResolver;
   const shared = isUsableResolver(candidate) ? candidate : undefined;
@@ -224,7 +233,9 @@ export function toDiagram(setup: SetupView): DiagramState {
   if (shared)
     served.set(shared.toLowerCase(), {
       address: shared,
-      names: setup.illustrative ? [] : [setup.parentName],
+      names: setup.illustrative
+        ? []
+        : [...new Set([setup.parentName, ...(setup.resolverNames ?? [])])],
       shared: true,
     });
   const foreignIds = new Map<string, string>();
@@ -258,7 +269,8 @@ export function toDiagram(setup: SetupView): DiagramState {
       !setup.illustrative &&
       group.shared &&
       !hasExplicitSharedPointer &&
-      !hasVerifiedRecords
+      !hasVerifiedRecords &&
+      !setup.resolverNames?.length
     )
       continue;
     const nameWidth = Math.max(
@@ -315,13 +327,15 @@ export function toDiagram(setup: SetupView): DiagramState {
             ? undefined
             : direct === null
               ? "record lookup unavailable"
-              : direct === undefined
-                ? "record link not read yet"
-                : direct === "0"
-                  ? fallback
-                    ? "uses default record"
-                    : "no direct record link"
-                  : "name link",
+              : setup.resolverNames?.includes(name)
+                ? "resolver-linked name"
+                : direct === undefined
+                  ? "record link not read yet"
+                  : direct === "0"
+                    ? fallback
+                      ? "uses default record"
+                      : "no direct record link"
+                    : "name link",
         },
       });
       relate(id, nameId);

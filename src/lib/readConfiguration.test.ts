@@ -31,7 +31,12 @@ function fixture() {
       contracts,
     }: {
       contracts: { address: string; functionName: string }[];
-    }) => {
+    }): Promise<unknown[]> => {
+      if (contracts[0].functionName === "getSubregistry")
+        return contracts.map(() => ({
+          status: "success",
+          result: zeroAddress,
+        }));
       if (contracts[0].functionName === "getRecordId")
         return contracts.map(() => ({ status: "success", result: 0n }));
       return contracts[0].address === network.addresses.ETHRegistry
@@ -270,8 +275,116 @@ it("keeps unsupported child registries distinct from successfully empty registri
 });
 
 it("reports undecodable registry history instead of a verified empty registry", async () => {
-  const {client,logs}=fixture();
-  logs.mockResolvedValue([{args:{},topics:[`0x${"0".repeat(64)}`]}] as never);
-  const result=await readConfiguration(client,client,"wallet.eth",network);
+  const { client, logs } = fixture();
+  logs.mockResolvedValue([
+    { args: {}, topics: [`0x${"0".repeat(64)}`] },
+  ] as never);
+  const result = await readConfiguration(client, client, "wallet.eth", network);
   expect(result.subnamesError).toContain("could not be decoded");
 });
+
+it.each(["no-registry", "unregistered"])(
+  "inspects wildcard records while retaining the true %s registry status",
+  async (status) => {
+    const { client, multi, logs } = fixture();
+    multi.mockImplementation(async ({ contracts }) => {
+      if (contracts[0].functionName === "getState")
+        return [state, status === "no-registry" ? zeroAddress : child, shared];
+      if (contracts[0].functionName === "supportsInterface")
+        return [
+          { status: "success", result: true },
+          { status: "success", result: 21n },
+          { status: "success", result: 0n },
+        ];
+      return [];
+    });
+    if (status === "unregistered")
+      multi
+        .mockResolvedValueOnce([state, child, shared])
+        .mockResolvedValueOnce([
+          { ...state, status: 0 },
+          zeroAddress,
+          zeroAddress,
+        ]);
+    vi.mocked(client.readContract).mockResolvedValue([
+      shared,
+      `0x${"0".repeat(64)}`,
+      5n,
+    ] as never);
+    const result = await readConfiguration(
+      client,
+      client,
+      "team.wallet.eth",
+      network,
+    );
+    expect(result.status).toBe(status);
+    expect(result.resolution).toMatchObject({
+      wildcard: true,
+      foundAt: "wallet.eth",
+      source: "linked",
+      recordId: "21",
+    });
+    expect(result.setup).toMatchObject({
+      parentName: "team.wallet.eth",
+      parentNote: "no registry entry",
+      inheritedResolver: shared,
+    });
+    expect(result.setup.userRegistry).toBeUndefined();
+    expect(result.resolverNames).toBeUndefined();
+    expect(logs).not.toHaveBeenCalled();
+  },
+);
+
+it("checks child pointers at the snapshot without scanning deeper registries", async () => {
+  const { client, logs, multi } = fixture();
+  logs.mockResolvedValue([{ args: { label: "stockduel" } }] as never);
+  multi.mockImplementation(async ({ contracts }) => {
+    if (contracts[0].functionName === "getSubregistry")
+      return [{ status: "success", result: deep }];
+    if (contracts[0].functionName === "getRecordId")
+      return contracts.map(() => ({ status: "success", result: 0n }));
+    if (contracts[0].address === network.addresses.ETHRegistry)
+      return [state, child, shared];
+    return [state, shared];
+  });
+  const result = await readConfiguration(client, client, "wallet.eth", network);
+  expect(result.subnames?.[0].subregistry).toBe(deep);
+  expect(result.setup.subnames?.[0].childRegistry).toBe(true);
+  expect(logs.mock.calls).toHaveLength(1);
+  expect(logs.mock.calls[0]).toMatchObject([{ address: child }]);
+  const probe = multi.mock.calls.find(
+    ([call]) => call.contracts[0].functionName === "getSubregistry",
+  );
+  expect(probe?.[0]).toMatchObject({ blockNumber: head, allowFailure: true });
+});
+
+it.each([false, true])(
+  "keeps label data when child pointer lookup fails (whole RPC: %s)",
+  async (whole) => {
+    const { client, logs, multi } = fixture();
+    logs.mockResolvedValue([{ args: { label: "stockduel" } }] as never);
+    multi.mockImplementation(async ({ contracts }) => {
+      if (contracts[0].functionName === "getSubregistry") {
+        if (whole) throw Error("RPC offline");
+        return [{ status: "failure", error: Error("unsupported pointer") }];
+      }
+      if (contracts[0].functionName === "getRecordId")
+        return contracts.map(() => ({ status: "success", result: 0n }));
+      if (contracts[0].address === network.addresses.ETHRegistry)
+        return [state, child, shared];
+      return [state, shared];
+    });
+    const result = await readConfiguration(
+      client,
+      client,
+      "wallet.eth",
+      network,
+    );
+    expect(result.subnames?.[0].registered).toBe(true);
+    expect(result.subnames?.[0].subregistry).toBeUndefined();
+    expect(result.subnames?.[0].subregistryError).toContain(
+      whole ? "offline" : "unsupported",
+    );
+    expect(result.subnamesError).toBeUndefined();
+  },
+);

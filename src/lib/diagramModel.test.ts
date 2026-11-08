@@ -323,3 +323,25 @@ describe("configuration examples and empty live diagrams", () => {
     ).toHaveLength(2);
   });
 });
+
+it("renders resolver-discovered names without registry tokens or duplicate entries", () => {
+  const diagram = toDiagram({
+    parentName: "lab.eth",
+    resolver: shared,
+    resolverNames: ["time-q.lab.eth", "time-q.lab.eth"],
+    resolverRecords: {
+      [shared]: { "lab.eth": "0", "time-q.lab.eth": "21", "": "0" },
+    },
+  });
+  expect(diagram.nodes.some((node) => node.id === "user-registry")).toBe(false);
+  const names = diagram.nodes.filter(
+    (node) => node.data.label === "time-q.lab.eth",
+  );
+  expect(names).toHaveLength(1);
+  expect(names[0].data).toMatchObject({
+    inspection: { kind: "name", resolver: shared, name: "time-q.lab.eth" },
+    note: "resolver-linked name",
+  });
+  const resolverNode = diagram.nodes.find((node) => node.id === "resolver")!;
+  expect(resolverNode.position.x).toBeLessThan(600);
+});

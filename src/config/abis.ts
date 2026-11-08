@@ -1,360 +1,1261 @@
-/**
- * Minimal ABIs for the contracts the lab touches.
- * Adapted from ensv2-example-tests/src/abis.ts (tested against the deployed
- * Sepolia set) and extended with register/renew, root-role functions, and
- * events, verified against contracts-v2 main (@48b3e2d) interfaces.
- */
-
-/** PermissionedRegistry / UserRegistry: registry surface + EAC. */
+// Generated from the docs-pinned deployment artifacts. Run npm run generate:abis.
 export const registryAbi = [
-  // --- views ---
   {
-    name: "getSubregistry",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "label", type: "string" }],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    name: "getResolver",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "label", type: "string" }],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    name: "getState",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "anyId", type: "uint256" }],
-    outputs: [
+    "anonymous": false,
+    "inputs": [
       {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "status", type: "uint8" },
-          { name: "expiry", type: "uint64" },
-          { name: "latestOwner", type: "address" },
-          { name: "tokenId", type: "uint256" },
-          { name: "resource", type: "uint256" },
-        ],
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "resource",
+        "type": "uint256"
       },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "oldRoleBitmap",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newRoleBitmap",
+        "type": "uint256"
+      }
     ],
-  },
-  // NOTE: the deployed sepolia-official-v1-20260525-r2 registries have NO
-  // getOwner(anyId); use getState(anyId).latestOwner (or findOwner(label)).
-  {
-    name: "getExpiry",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "anyId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint64" }],
+    "name": "EACRolesChanged",
+    "type": "event"
   },
   {
-    name: "getResource",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "anyId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "getTokenId",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "anyId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  // --- EAC ---
-  {
-    name: "roles",
-    type: "function",
-    stateMutability: "view",
-    inputs: [
-      { name: "resource", type: "uint256" },
-      { name: "account", type: "address" },
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "tokenId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint64",
+        "name": "newExpiry",
+        "type": "uint64"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      }
     ],
-    outputs: [{ name: "", type: "uint256" }],
+    "name": "ExpiryUpdated",
+    "type": "event"
   },
   {
-    name: "hasRoles",
-    type: "function",
-    stateMutability: "view",
-    inputs: [
-      { name: "resource", type: "uint256" },
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "tokenId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "labelHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "expiry",
+        "type": "uint64"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
+    "name": "LabelRegistered",
+    "type": "event"
   },
   {
-    name: "hasRootRoles",
-    type: "function",
-    stateMutability: "view",
-    inputs: [
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "tokenId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "labelHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "expiry",
+        "type": "uint64"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
+    "name": "LabelReserved",
+    "type": "event"
   },
   {
-    name: "grantRootRoles",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "tokenId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "contract IRegistry",
+        "name": "subregistry",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
+    "name": "SubregistryUpdated",
+    "type": "event"
   },
   {
-    name: "revokeRootRoles",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "operator",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "from",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
+    "name": "TransferSingle",
+    "type": "event"
   },
   {
-    name: "grantRoles",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "resource", type: "uint256" },
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
+    "name": "getExpiry",
+    "outputs": [
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "revokeRoles",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "resource", type: "uint256" },
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "inputs": [],
+    "name": "getParent",
+    "outputs": [
+      {
+        "internalType": "contract IRegistry",
+        "name": "parent",
+        "type": "address"
+      },
+      {
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  // --- writes ---
-  {
-    name: "register",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "label", type: "string" },
-      { name: "owner", type: "address" },
-      { name: "subregistry", type: "address" },
-      { name: "resolver", type: "address" },
-      { name: "roleBitmap", type: "uint256" },
-      { name: "expiry", type: "uint64" },
-    ],
-    outputs: [{ name: "tokenId", type: "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "renew",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "anyId", type: "uint256" },
-      { name: "newExpiry", type: "uint64" },
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      }
     ],
-    outputs: [],
+    "name": "getResolver",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "setSubregistry",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "anyId", type: "uint256" },
-      { name: "subregistry", type: "address" },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      }
     ],
-    outputs: [],
+    "name": "getResource",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "setResolver",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "anyId", type: "uint256" },
-      { name: "resolver", type: "address" },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      }
     ],
-    outputs: [],
+    "name": "getState",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "enum IPermissionedRegistry.Status",
+            "name": "status",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint64",
+            "name": "expiry",
+            "type": "uint64"
+          },
+          {
+            "internalType": "address",
+            "name": "latestOwner",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "tokenId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "resource",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct IPermissionedRegistry.State",
+        "name": "state",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "setParent",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "parent", type: "address" },
-      { name: "label", type: "string" },
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      }
     ],
-    outputs: [],
+    "name": "getSubregistry",
+    "outputs": [
+      {
+        "internalType": "contract IRegistry",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "getParent",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [
-      { name: "parent", type: "address" },
-      { name: "label", type: "string" },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      }
     ],
-  },
-  // --- events ---
-  {
-    name: "LabelRegistered",
-    type: "event",
-    inputs: [
-      { name: "tokenId", type: "uint256", indexed: true },
-      { name: "labelHash", type: "bytes32", indexed: true },
-      { name: "label", type: "string", indexed: false },
-      { name: "owner", type: "address", indexed: false },
-      { name: "expiry", type: "uint64", indexed: false },
-      { name: "sender", type: "address", indexed: true },
+    "name": "getTokenId",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
     ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "TransferSingle",
-    type: "event",
-    inputs: [
-      { name: "operator", type: "address", indexed: true },
-      { name: "from", type: "address", indexed: true },
-      { name: "to", type: "address", indexed: true },
-      { name: "id", type: "uint256", indexed: false },
-      { name: "value", type: "uint256", indexed: false },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
     ],
+    "name": "grantRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
   },
   {
-    name: "SubregistryUpdated",
-    type: "event",
-    inputs: [
-      { name: "tokenId", type: "uint256", indexed: true },
-      { name: "subregistry", type: "address", indexed: false },
-      { name: "sender", type: "address", indexed: true },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
     ],
+    "name": "grantRootRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
   },
   {
-    name: "ExpiryUpdated",
-    type: "event",
-    inputs: [
-      { name: "tokenId", type: "uint256", indexed: true },
-      { name: "newExpiry", type: "uint64", indexed: true },
-      { name: "sender", type: "address", indexed: true },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
     ],
+    "name": "hasRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "EACRolesChanged",
-    type: "event",
-    inputs: [
-      { name: "resource", type: "uint256", indexed: true },
-      { name: "account", type: "address", indexed: true },
-      { name: "oldRoleBitmap", type: "uint256", indexed: false },
-      { name: "newRoleBitmap", type: "uint256", indexed: false },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
     ],
+    "name": "hasRootRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
+  {
+    "inputs": [],
+    "name": "isEmancipated",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      },
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "internalType": "contract IRegistry",
+        "name": "registry",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "resolver",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint64",
+        "name": "expiry",
+        "type": "uint64"
+      }
+    ],
+    "name": "register",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint64",
+        "name": "newExpiry",
+        "type": "uint64"
+      }
+    ],
+    "name": "renew",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "revokeRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "revokeRootRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      }
+    ],
+    "name": "roleCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "roles",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "contract IRegistry",
+        "name": "parent",
+        "type": "address"
+      },
+      {
+        "internalType": "string",
+        "name": "label",
+        "type": "string"
+      }
+    ],
+    "name": "setParent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "resolver",
+        "type": "address"
+      }
+    ],
+    "name": "setResolver",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "anyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "contract IRegistry",
+        "name": "registry",
+        "type": "address"
+      }
+    ],
+    "name": "setSubregistry",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
 ] as const;
 
-/** UserRegistry proxy initializer (encoded into VerifiableFactory.deployProxy data). */
 export const userRegistryInitAbi = [
   {
-    name: "initialize",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "rootAccount", type: "address" },
-      { name: "roleBitmap", type: "uint256" },
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "account",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "roleBitmap",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct Grant[]",
+        "name": "grants",
+        "type": "tuple[]"
+      }
     ],
-    outputs: [],
-  },
+    "name": "initialize",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
 ] as const;
 
-/**
- * PermissionedResolver proxy initializer.
- * NOTE: the DEPLOYED Sepolia implementation (0xdcE5...2FfA) takes 2 args;
- * contracts-v2 main has since moved to a 3-arg version with init setters.
- * Keep in sync with the implementation address in deployments.ts.
- */
 export const resolverInitAbi = [
   {
-    name: "initialize",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "admin", type: "address" },
-      { name: "roleBitmap", type: "uint256" },
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "account",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "roleBitmap",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct Grant[]",
+        "name": "grants",
+        "type": "tuple[]"
+      },
+      {
+        "internalType": "bytes[]",
+        "name": "calls",
+        "type": "bytes[]"
+      }
     ],
-    outputs: [],
-  },
+    "name": "initialize",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
 ] as const;
 
-/** PermissionedResolver: the record surface the lab uses. */
 export const resolverAbi = [
   {
-    name: "addr",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "node", type: "bytes32" }],
-    outputs: [{ name: "", type: "address" }],
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "node",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getRecordId",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "setAddr",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "node", type: "bytes32" },
-      { name: "addr_", type: "address" },
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "roleBitmap",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
     ],
-    outputs: [],
+    "name": "hasRootRoles",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "setText",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "node", type: "bytes32" },
-      { name: "key", type: "string" },
-      { name: "value", type: "string" },
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "name",
+        "type": "bytes"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
     ],
-    outputs: [],
+    "name": "resolve",
+    "outputs": [
+      {
+        "internalType": "bytes",
+        "name": "",
+        "type": "bytes"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
   },
   {
-    name: "hasRootRoles",
-    type: "function",
-    stateMutability: "view",
-    inputs: [
-      { name: "roleBitmap", type: "uint256" },
-      { name: "account", type: "address" },
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "name",
+        "type": "bytes"
+      },
+      {
+        "internalType": "uint256",
+        "name": "coinType",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes",
+        "name": "addressBytes",
+        "type": "bytes"
+      }
     ],
-    outputs: [{ name: "", type: "bool" }],
+    "name": "setAddress",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
   },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "name",
+        "type": "bytes"
+      },
+      {
+        "internalType": "string",
+        "name": "key",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "value",
+        "type": "string"
+      }
+    ],
+    "name": "setText",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
 ] as const;
 
-/** VerifiableFactory: proxy deployment + discovery event. */
 export const verifiableFactoryAbi = [
   {
-    name: "deployProxy",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "implementation", type: "address" },
-      { name: "salt", type: "uint256" },
-      { name: "data", type: "bytes" },
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "proxyAddress",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "salt",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "implementation",
+        "type": "address"
+      }
     ],
-    outputs: [{ name: "proxy", type: "address" }],
+    "name": "ProxyDeployed",
+    "type": "event"
   },
   {
-    name: "ProxyDeployed",
-    type: "event",
-    inputs: [
-      { name: "sender", type: "address", indexed: true },
-      { name: "proxyAddress", type: "address", indexed: true },
-      { name: "salt", type: "uint256", indexed: false },
-      { name: "implementation", type: "address", indexed: false },
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "implementation",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "salt",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
     ],
+    "name": "deployProxy",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "proxy",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
   },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "deployer",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "salt",
+        "type": "uint256"
+      }
+    ],
+    "name": "predictProxyAddress",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "proxy",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+] as const;
+
+export const resolverInspectionAbi = [
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "contentType",
+        "type": "uint256"
+      }
+    ],
+    "name": "ABIUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "coinType",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "addressBytes",
+        "type": "bytes"
+      }
+    ],
+    "name": "AddressUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      }
+    ],
+    "name": "Cleared",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "hash",
+        "type": "bytes"
+      }
+    ],
+    "name": "ContenthashUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "string",
+        "name": "keyHash",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "key",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "value",
+        "type": "bytes"
+      }
+    ],
+    "name": "DataUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes4",
+        "name": "interfaceId",
+        "type": "bytes4"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "implementer",
+        "type": "address"
+      }
+    ],
+    "name": "InterfaceUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "node",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "name",
+        "type": "bytes"
+      }
+    ],
+    "name": "Linked",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "primaryName",
+        "type": "string"
+      }
+    ],
+    "name": "NameUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "recordId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "string",
+        "name": "keyHash",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "key",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "value",
+        "type": "string"
+      }
+    ],
+    "name": "TextUpdated",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "getRecordCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "node",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getRecordId",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "resource",
+        "type": "uint256"
+      }
+    ],
+    "name": "roleCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "resource",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "roles",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes4",
+        "name": "interfaceId",
+        "type": "bytes4"
+      }
+    ],
+    "name": "supportsInterface",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
 ] as const;
 
 /** ERC20 with the Mock tokens' open mint. */
@@ -400,6 +1301,8 @@ export const erc20Abi = [
 
 /** SimpleSubnameRegistrar (constructor/bytecode live in config/artifacts). */
 export const simpleRegistrarAbi = [
+  { type: "function", name: "REGISTRY", stateMutability: "view", inputs: [], outputs: [{type: "address"}] },
+  { type: "function", name: "PAYMENT_TOKEN", stateMutability: "view", inputs: [], outputs: [{type: "address"}] },
   {
     name: "isAvailable",
     type: "function",

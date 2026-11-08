@@ -3,11 +3,13 @@
 import { useReadContract } from "wagmi";
 import type { Abi, Address } from "viem";
 import { erc20Abi } from "../config/abis";
-import { deployments } from "../config/deployments";
+import { useDeployment } from "./useDeployment";
 
 export function useUsdc(account?: Address, spender?: Address) {
+  const network = useDeployment();
+  const deployments = network.addresses;
   const balance = useReadContract({
-    address: deployments.MockUSDC,
+    address: deployments.PaymentToken,
     abi: erc20Abi as Abi,
     functionName: "balanceOf",
     args: account ? [account] : undefined,
@@ -15,7 +17,7 @@ export function useUsdc(account?: Address, spender?: Address) {
   });
 
   const allowance = useReadContract({
-    address: deployments.MockUSDC,
+    address: deployments.PaymentToken,
     abi: erc20Abi as Abi,
     functionName: "allowance",
     args: account && spender ? [account, spender] : undefined,

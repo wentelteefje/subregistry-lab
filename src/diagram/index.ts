@@ -6,6 +6,7 @@
 export { ConfigDiagram } from "./ConfigDiagram";
 export { nodeTypes } from "./nodes";
 export type {
+  InspectionTarget,
   DiagramState,
   DiagramNode,
   DiagramEdge,

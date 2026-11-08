@@ -1,31 +1,13 @@
-# Diagram builder
+# Configuration diagrams
 
-**Hybrid approach:** programmatic data (nodes + edges as state/JSON) with a **canvas editor** for layout and connections.
+`lib/diagramModel.ts` builds the semantic nodes and routing edges. `ConfigDiagram` renders one responsive HTML layout with measured SVG connectors and a CSS graph-paper background. Contract headers and name rows use native buttons and retain their hit-target sizes; the diagram never zooms them down. A container query stacks the parent above the registry and resolver columns in narrow panels.
 
-- **Canvas:** drag nodes, connect handles, pan/zoom, grid snap. Toolbar: add nodes by type, delete selection, Export/Import JSON.
-- **Programmatic:** diagram is plain data. Export JSON for version control; import to restore or generate from code.
+- Registry rows show local labels. Resolver rows show full names, matching the DNS-name/namehash interface.
+- Contract headers open read-only registry or resolver details. Registry labels open ownership, expiry, pointers, permissions and developer identifiers. Resolver names open the records read directly from that resolver.
+- The inspector overlays the page at the right on desktop and becomes a bottom sheet on mobile. It remains adjacent to its diagram in DOM focus order; Escape closes it and restores the originating button. Changing chain or parent setup dismisses it; routine label and resolver updates retain a valid read-only inspection.
+- Parent subregistry and resolver pointers remain separate. Dashed label routes indicate ancestor-resolver inheritance. Explicitly linked resolvers remain visible even with no record bundle. Unattached placeholders and empty registry frames are omitted; excess own resolvers are summarized and reachable through label inspection.
+- Review uses explicitly illustrative Alice/Bob examples with no live inspection targets or RPC reads. Setup does not register the example subnames.
 
-## Node types
+`lib/inspection.ts` pins a head block for each inspection. Profile getters are encoded inside `resolve(bytes,bytes)`. The implementation slot is checked before using the pinned resolver event schema. Event keys are discovered by record ID and then read at the pinned block; deleted values are unset, and exact address checks distinguish stored records from EVM fallback. Default fallback selects a whole record bundle, never individual fields. Incomplete history and failed profile reads remain visible, with manual profile lookup available. Manual lookups reuse the pinned block without rescanning history. Refresh and completed playground actions invalidate inspection data.
 
-- **Root** — Rounded rect: `<root>` + optional `owner` (e.g. `0x0123...`). Handles top/bottom. Entity/state.
-- **Action** — Pill: single label (e.g. `eth`, `@ UPLOAD`). Handles left/right. Flow steps.
-- **Gateway** — Diamond: label + optional id (e.g. "REPLACEABLE GATEWAY" / `eth.limo`). Resolution & serving path.
-- **Registry** — Oval: label + optional subtitle (e.g. "ONCHAIN NAME REGISTRY" / ENS). Handles left/right.
-- **Group** — Dotted rounded rect: label only (e.g. "Authorship & Update Control"). Visual grouping.
-
-## Edge labels
-
-Edges support a `label` property (e.g. `"2. UPLOAD"`, `"resolve name"`). Set in JSON or via `updateEdge(id, { label: "..." })`.
-
-## Example use cases
-
-- **Deployment pipeline:** Builder/Signer → Omnipin → IPFS (UPLOAD, RETURN CID) → Filecoin (PERSIST) → Safe → ENS. Use Root, Action, Registry, Group.
-- **Resolution & serving path:** User → Gateway (eth.limo) → Registry (ENS) → Gateway → Storage (Filecoin) → Gateway → User. Use Gateway + Registry; label edges e.g. "visit example.eth", "resolve name", "content hash [CID]", "HTTP response".
-
-## Usage
-
-- **+ Root** / **+ Action** / **+ Gateway** / **+ Registry** / **+ Group** — add nodes.
-- Drag from a handle to another to connect. Select nodes then **Delete**.
-- **Export JSON** / **Import JSON** — full state including edge labels.
-
-Theme: blueprint (light blue paper, grid, dark blue ink). CSS variables in `index.css` under `.diagram-canvas`.
+The ABI generator selects the inspection events and getters from both pinned deployment artifacts. Unit tests cover inspection semantics and controls; `npm run test:fork` exercises actual deployed contracts on local Mainnet and Sepolia forks, including custom keys, deletion and default fallback. Fork log queries exclude pre-fork history because every fixture is created locally after the fork.

@@ -1,198 +1,372 @@
-/**
- * Transaction sequence runner. Walks a StepDef[] plan:
- *   simulate (writes) -> wallet -> mining -> onReceipt ctx patch -> verify -> done.
- *
- * Resumable by design:
- * - each step's state (incl. txHash) is persisted to the session immediately;
- * - a step whose verify() already passes is auto-skipped ("already done");
- * - on failure/rejection, run() can be called again and continues from the
- *   first step that isn't done (fresh salts are derived inside build()).
- */
-
-import { useCallback, useRef, useState } from "react";
+import { getTransactionCount } from "viem/actions";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { usePublicClient, useWalletClient } from "wagmi";
-import type { Abi, Address } from "viem";
+import { getAccount } from "@wagmi/core";
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
+  type Address,
+} from "viem";
+import { getDeployment } from "../config/deployments";
+import { verifiableFactoryAbi } from "../config/abis";
+import { scanRanges } from "../lib/scan";
+import { wagmiConfig } from "../wagmiConfig";
 import { classifyError } from "../lib/errors";
-import type { ReadFn, StepCtx, StepDef } from "../lib/steps";
+import type { StepCtx, StepDef } from "../lib/steps";
+import { executeSequence, prepareTransaction } from "../lib/sequence";
+import { acquireRun, isRunning, subscribeRuns } from "../lib/inflight";
 import { useLab } from "../state/LabContext";
-import type { StepState } from "../state/labSession";
+import { isPendingTransaction, type StepState } from "../state/labSession";
 
 export type SequenceStatus = "idle" | "running" | "done" | "failed";
-
 export type SequenceHandle = {
   status: SequenceStatus;
-  /** stepId -> state, live during the run and rehydrated from the session. */
   steps: Record<string, StepState>;
-  /** Kick off (or resume) the sequence. */
-  run: (plan: StepDef[], initialCtx: StepCtx) => Promise<StepCtx | undefined>;
-  reset: () => void;
+  run: (plan: StepDef[], ctx: StepCtx) => Promise<StepCtx | undefined>;
+  reset: (options?: { acknowledgeConfirmedFailure?: boolean }) => void;
+  error?: string;
 };
 
 export function useTxSequence(sequenceId: string): SequenceHandle {
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
-  const { session, dispatch } = useLab();
-  const [status, setStatus] = useState<SequenceStatus>("idle");
-  const running = useRef(false);
-  const currentStepId = useRef<string>(undefined);
-
-  const persisted = session?.sequences[sequenceId] ?? {};
-  const [live, setLive] = useState<Record<string, StepState>>({});
-  const steps = { ...persisted, ...live };
-
-  const setStep = useCallback(
-    (stepId: string, state: StepState) => {
-      setLive((prev) => ({ ...prev, [stepId]: state }));
-      dispatch({ type: "step-state", sequenceId, stepId, state });
-    },
-    [dispatch, sequenceId],
+  const { session, state, dispatch, getState } = useLab();
+  const scope = state.activeKey;
+  const runKey = `${scope}:${sequenceId}`;
+  const senderKey = `sender:${session?.chainId}:${session?.wallet}`;
+  const busy = useSyncExternalStore(
+    subscribeRuns,
+    () => isRunning(runKey) || isRunning(senderKey),
   );
-
-  const reset = useCallback(() => {
-    setLive({});
-    setStatus("idle");
-    dispatch({ type: "reset-sequence", sequenceId });
-  }, [dispatch, sequenceId]);
+  const [error, setError] = useState<string>();
+  const [status, setStatus] = useState<SequenceStatus>("idle");
+  const lifetime = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
+  const getSteps = useCallback(
+    () =>
+      scope ? (getState().sessions[scope]?.sequences[sequenceId] ?? {}) : {},
+    [scope, getState, sequenceId],
+  );
+  const setStep = useCallback(
+    (id: string, value: StepState) => {
+      dispatch({
+        type: "step-state",
+        sequenceId,
+        stepId: id,
+        state: value,
+        sessionKey: scope,
+      });
+    },
+    [dispatch, scope, sequenceId],
+  );
+  const reset = useCallback(
+    (options?: { acknowledgeConfirmedFailure?: boolean }) => {
+      if (isRunning(runKey) || isRunning(senderKey)) return;
+      const steps = getSteps();
+      const retained = Object.entries(steps).filter(
+        ([, step]) =>
+          isPendingTransaction(step) ||
+          (step.confirmed &&
+            step.status === "failed" &&
+            !step.reverted &&
+            !step.cancelled &&
+            !options?.acknowledgeConfirmedFailure) ||
+          (step.capture === "subResolver" &&
+            step.confirmed &&
+            !steps["set-sub-resolver"]?.confirmed),
+      );
+      dispatch({ type: "reset-sequence", sequenceId, sessionKey: scope });
+      for (const [id, step] of retained) setStep(id, step);
+      setStatus("idle");
+    },
+    [dispatch, scope, sequenceId, runKey, senderKey, getSteps, setStep],
+  );
 
   const run = useCallback(
-    async (plan: StepDef[], initialCtx: StepCtx): Promise<StepCtx | undefined> => {
-      if (running.current || !publicClient || !walletClient) return undefined;
-      running.current = true;
+    async (plan: StepDef[], ctx: StepCtx) => {
+      if (!session || !scope || !publicClient || !walletClient) return;
+      setError(undefined);
+      const release = acquireRun(runKey);
+      const releaseSender = release ? acquireRun(senderKey) : undefined;
+      if (!release || !releaseSender) {
+        release?.();
+        setError(
+          "Another transaction flow is active. Wait for it to finish before resuming.",
+        );
+        return;
+      }
+      const signal = lifetime.current?.signal;
       setStatus("running");
-
-      const read: ReadFn = (params) =>
-        publicClient.readContract({
-          address: params.address,
-          abi: params.abi,
-          functionName: params.functionName,
-          args: params.args as unknown[],
-        });
-
-      // Rehydrate ctx patches from previously completed steps where possible
-      // is unnecessary: address patches live in the session already and the
-      // caller passes them in via initialCtx. We just avoid re-running steps.
-      let ctx: StepCtx = { ...initialCtx };
-      const account = walletClient.account?.address as Address;
-
+      const chainId = session.chainId;
+      const account = session.wallet as Address;
+      const assertCurrent = () => {
+        const connected = getAccount(wagmiConfig);
+        const sameAccount =
+          connected.address?.toLowerCase() === account &&
+          ctx.account.toLowerCase() === account;
+        const sameNetwork =
+          ctx.chainId === chainId &&
+          connected.chainId === chainId &&
+          publicClient.chain.id === chainId;
+        if (
+          signal?.aborted ||
+          getState().activeKey !== scope ||
+          !sameAccount ||
+          !sameNetwork
+        ) {
+          throw new Error(
+            "Session changed. Return to the original account, name and network to resume.",
+          );
+        }
+      };
+      const assertIdentity = async () => {
+        assertCurrent();
+        const walletChainId = await walletClient.getChainId();
+        assertCurrent();
+        if (walletChainId !== chainId)
+          throw new Error("Wallet network changed");
+      };
       try {
-        for (const step of plan) {
-          const prior = (session?.sequences[sequenceId] ?? {})[step.id];
-          if (prior?.status === "done" || prior?.status === "skipped") continue;
-
-          if (step.skipIf?.(ctx)) {
-            setStep(step.id, { status: "skipped" });
-            continue;
-          }
-
-          // Idempotence guard: if the outcome is already on-chain, skip.
-          if (step.verify) {
-            try {
-              const pre = await step.verify(read, ctx);
-              if (pre.ok) {
-                setStep(step.id, { status: "done", detail: `Already done: ${pre.detail}` });
-                continue;
-              }
-            } catch {
-              // verify not answerable yet (e.g. missing ctx) - proceed normally
-            }
-          }
-
-          currentStepId.current = step.id;
-          const action = step.build(ctx);
-          setStep(step.id, { status: "wallet" });
-
-          let txHash: `0x${string}`;
-          if (action.type === "write") {
-            // Pre-flight simulation surfaces reverts before the wallet popup.
-            await publicClient.simulateContract({
-              account,
-              address: action.address,
-              abi: action.abi,
-              functionName: action.functionName,
-              args: action.args as unknown[],
-            });
-            txHash = await walletClient.writeContract({
-              account,
-              chain: walletClient.chain,
-              address: action.address,
-              abi: action.abi,
-              functionName: action.functionName,
-              args: action.args as unknown[],
-            });
-          } else {
-            txHash = await walletClient.deployContract({
-              account,
-              chain: walletClient.chain,
-              abi: action.abi as Abi,
-              bytecode: action.bytecode,
-              args: action.args as unknown[],
-            });
-          }
-
-          setStep(step.id, { status: "mining", txHash });
-          const receipt = await publicClient.waitForTransactionReceipt({
-            hash: txHash,
-            confirmations: 1,
-          });
-          if (receipt.status !== "success") {
-            throw new Error(`Transaction reverted: ${txHash}`);
-          }
-
-          if (step.onReceipt) {
-            const patch = step.onReceipt(receipt, ctx);
-            ctx = { ...ctx, ...patch };
-            // Persist deployed addresses immediately so refreshes survive.
-            const addressPatch: Record<string, Address> = {};
-            if (patch.userRegistry) addressPatch.userRegistry = patch.userRegistry;
-            if (patch.resolver) addressPatch.resolver = patch.resolver;
-            if (patch.registrar) addressPatch.registrar = patch.registrar;
-            if (Object.keys(addressPatch).length > 0) {
-              dispatch({ type: "patch-addresses", patch: addressPatch });
-            }
-            if (patch.userRegistry) {
-              dispatch({ type: "set-registry-deploy-block", block: receipt.blockNumber });
-            }
-          }
-
-          if (step.verify) {
-            setStep(step.id, { status: "verifying", txHash });
-            const result = await step.verify(read, ctx);
-            if (!result.ok) {
-              setStep(step.id, {
-                status: "failed",
-                txHash,
-                detail: result.detail,
-                errorKind: "verify-failed",
+        const stranded = Object.entries(getSteps()).some(
+          ([id, step]) =>
+            isPendingTransaction(step) &&
+            !plan.some((candidate) => candidate.id === id),
+        );
+        if (stranded)
+          throw new Error(
+            "Check the pending transaction above before starting a different action",
+          );
+        const result = await executeSequence(plan, ctx, {
+          assertIdentity,
+          read: (p) =>
+            publicClient.readContract({ ...p, args: p.args as unknown[] }),
+          getState: (id) => getSteps()[id],
+          setState: setStep,
+          recover: async (action) => {
+            const network = getDeployment(chainId);
+            if (
+              !ctx.setupNonce ||
+              action.type !== "write" ||
+              action.functionName !== "deployProxy" ||
+              action.address.toLowerCase() !==
+                network.addresses.VerifiableFactory.toLowerCase()
+            )
+              return;
+            await assertIdentity();
+            const [implementation, salt] = action.args as [
+              Address,
+              bigint,
+              unknown,
+            ];
+            const predicted = await publicClient
+              .readContract({
+                address: action.address,
+                abi: verifiableFactoryAbi,
+                functionName: "predictProxyAddress",
+                args: [account, salt],
+              })
+              .catch((error: unknown) => {
+                const unsupported =
+                  error instanceof BaseError &&
+                  error.walk(
+                    (cause) =>
+                      cause instanceof ContractFunctionRevertedError ||
+                      cause instanceof ContractFunctionZeroDataError,
+                  );
+                if (!unsupported) throw error; // Transport failures must not become wallet prompts.
+                return undefined;
               });
-              setStatus("failed");
-              return undefined;
+            if (!predicted) return; // Unsupported prediction: retain receipt-based recovery.
+            const code = await publicClient.getCode({ address: predicted });
+            if (!code || code === "0x") return;
+            // A submitted request can land even if its hash never reached the app.
+            // Recover only a factory event AND the identical original request.
+            const event = verifiableFactoryAbi.find(
+              (item) => item.type === "event",
+            )!;
+            const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+            const logs = await scanRanges(
+              (fromBlock, toBlock) =>
+                publicClient.getLogs({
+                  address: action.address,
+                  event,
+                  args: { sender: account, proxyAddress: predicted },
+                  fromBlock,
+                  toBlock,
+                }),
+              BigInt(network.factoryDeployBlock),
+              head,
+              () => Boolean(signal?.aborted),
+            );
+            const log = logs.find(
+              (item) =>
+                item.args.salt === salt &&
+                item.args.implementation?.toLowerCase() ===
+                  implementation.toLowerCase() &&
+                item.args.proxyAddress?.toLowerCase() ===
+                  predicted.toLowerCase(),
+            );
+            if (!log?.transactionHash)
+              throw new Error(
+                "The reviewed deployment address already has code, but its deployment could not be recovered. Inspect factory history before continuing.",
+              );
+            const tx = await publicClient.getTransaction({
+              hash: log.transactionHash,
+            });
+            const expected = prepareTransaction(action, account, tx.nonce);
+            if (
+              tx.from.toLowerCase() !== account.toLowerCase() ||
+              tx.to?.toLowerCase() !== action.address.toLowerCase() ||
+              tx.input.toLowerCase() !== expected.input.toLowerCase() ||
+              tx.value !== 0n
+            )
+              throw new Error(
+                "Existing deployment does not match the reviewed request. Inspect factory history.",
+              );
+            await assertIdentity();
+            return { txHash: log.transactionHash, transaction: expected };
+          },
+          prepare: async (action) => {
+            await assertIdentity();
+            const nonce = await getTransactionCount(walletClient, {
+              address: account,
+              blockTag: "pending",
+            });
+            await assertIdentity();
+            return prepareTransaction(action, account, nonce);
+          },
+          verificationBlock: async (minimum) => {
+            for (let attempt = 0; attempt < 6; attempt++) {
+              await assertIdentity();
+              const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+              if (head >= minimum) return head;
+              await new Promise((resolve) =>
+                setTimeout(resolve, 200 * (attempt + 1)),
+              );
             }
-            setStep(step.id, { status: "done", txHash, detail: result.detail });
-          } else {
-            setStep(step.id, { status: "done", txHash });
-          }
-        }
-
+            throw new Error(
+              "The RPC is behind the mined transaction. Retry verification without paying again.",
+            );
+          },
+          send: async (action, transaction) => {
+            await assertIdentity();
+            if (action.type === "deploy")
+              return walletClient.deployContract({
+                abi: action.abi,
+                bytecode: action.bytecode,
+                account,
+                chain: publicClient.chain,
+                nonce: transaction?.nonce,
+                args: action.args as unknown[],
+              });
+            const { request } = await publicClient.simulateContract({
+              address: action.address,
+              abi: action.abi,
+              functionName: action.functionName,
+              account,
+              args: action.args as unknown[],
+            });
+            await assertIdentity();
+            return walletClient.writeContract({
+              ...request,
+              chain: publicClient.chain,
+              nonce: transaction?.nonce,
+            });
+          },
+          transaction: async (hash) => {
+            const transaction = await publicClient.getTransaction({ hash });
+            return {
+              nonce: transaction.nonce,
+              from: transaction.from,
+              to: transaction.to,
+              input: transaction.input,
+              value: transaction.value.toString(),
+            };
+          },
+          receipt: (hash, onReplaced) =>
+            publicClient.waitForTransactionReceipt({
+              hash,
+              confirmations: 1,
+              onReplaced: ({ reason, transaction }) =>
+                onReplaced?.({
+                  hash: transaction.hash,
+                  cancelled: reason !== "repriced",
+                  transaction: {
+                    nonce: transaction.nonce,
+                    from: transaction.from,
+                    to: transaction.to,
+                    input: transaction.input,
+                    value: transaction.value.toString(),
+                  },
+                }),
+            }),
+          patch: (patch, blockNumber) => {
+            const addresses: Partial<NonNullable<typeof session>["addresses"]> =
+              {};
+            if (patch.userRegistry) addresses.userRegistry = patch.userRegistry;
+            if (patch.resolver) addresses.resolver = patch.resolver;
+            if (patch.registrar) addresses.registrar = patch.registrar;
+            if (patch.subResolver && patch.subResolverName)
+              dispatch({
+                type: "cache-own-resolver",
+                sessionKey: scope,
+                name: patch.subResolverName,
+                address: patch.subResolver,
+              });
+            if (Object.keys(addresses).length)
+              dispatch({
+                type: "patch-addresses",
+                patch: addresses,
+                sessionKey: scope,
+              });
+            if (patch.userRegistry)
+              dispatch({
+                type: "set-registry-deploy-block",
+                block: blockNumber,
+                sessionKey: scope,
+              });
+          },
+        });
+        await assertIdentity();
         setStatus("done");
-        return ctx;
-      } catch (err) {
-        const classified = classifyError(err);
-        if (currentStepId.current) {
-          setStep(currentStepId.current, {
-            status: "failed",
-            detail: classified.hint ? `${classified.message} ${classified.hint}` : classified.message,
-            errorKind: classified.kind,
-          });
-        }
+        return result;
+      } catch (error) {
+        setError(classifyError(error).message);
         setStatus("failed");
-        return undefined;
       } finally {
-        running.current = false;
-        currentStepId.current = undefined;
+        releaseSender();
+        release();
       }
     },
-    [publicClient, walletClient, session, sequenceId, dispatch, setStep],
+    [
+      session,
+      scope,
+      publicClient,
+      walletClient,
+      dispatch,
+      setStep,
+      getState,
+      getSteps,
+      runKey,
+      senderKey,
+    ],
   );
-
-  return { status, steps, run, reset };
+  return {
+    status: busy ? "running" : status,
+    steps: session?.sequences[sequenceId] ?? {},
+    run,
+    reset,
+    error,
+  };
 }

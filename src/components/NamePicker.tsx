@@ -1,3 +1,4 @@
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Step 2: pick one of your .eth names (scanned from chain logs) or enter a
  * label manually (covers names owned by a Safe/smart account that granted
@@ -13,6 +14,7 @@ import { useLab } from "../state/LabContext";
 import { AvatarSquare, Badge, ExternalLink, formatExpiry } from "./ui";
 
 export function NamePicker() {
+  const network = useDeployment();
   const { address } = useAccount();
   const { names, loading, progress, error, refresh } = useOwnedNames(address);
   const { session, dispatch } = useLab();
@@ -22,7 +24,7 @@ export function NamePicker() {
   if (!address) return null;
 
   const select = (label: string) => {
-    dispatch({ type: "select-name", wallet: address, parentLabel: label });
+    dispatch({ type: "select-name", wallet: address, parentLabel: label, chainId: network.id });
   };
 
   const submitManual = () => {
@@ -39,7 +41,7 @@ export function NamePicker() {
     <div className="flex flex-col gap-4">
       {loading && (
         <div>
-          <p className="text-sm opacity-70">Scanning Sepolia for your names…</p>
+          <p className="text-sm opacity-70">Scanning {network.chain.name} for your names…</p>
           <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-neutral-200">
             <div
               className="h-full bg-neutral-800 transition-all"
@@ -81,8 +83,8 @@ export function NamePicker() {
 
       {!loading && names.length === 0 && !error && (
         <p className="text-sm opacity-70">
-          No .eth names found for this wallet on Sepolia. Register one with the{" "}
-          <ExternalLink href="https://explorer.ens.dev">ENS Explorer</ExternalLink> or enter a
+          No .eth names found for this wallet on {network.chain.name}. Register one with the{" "}
+          <ExternalLink href={network.id === 1 ? "https://explorer.ens.domains" : "https://sepolia.explorer.ens.domains"}>ENS Explorer</ExternalLink> or enter a
           label below if your name is owned by a different account that granted you access.
         </p>
       )}
@@ -122,7 +124,7 @@ export function NamePicker() {
           <span>Working on</span>
           <AvatarSquare size={16} />
           <strong>{session.parentLabel}.eth</strong>
-          <ExternalLink href={explorerName(`${session.parentLabel}.eth`)}>
+          <ExternalLink href={explorerName(`${session.parentLabel}.eth`, network.id)}>
             view in ENS Explorer
           </ExternalLink>
         </p>

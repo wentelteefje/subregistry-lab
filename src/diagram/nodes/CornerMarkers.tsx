@@ -10,14 +10,14 @@ const socketClass =
   "absolute w-1.5 h-1.5 rounded-[2px] pointer-events-none bg-[var(--diagram-socket)]";
 const cornerPos = "translate-x-[-3px] translate-y-[-3px]";
 
-function CornerMarkers({ variant: _variant = "blue" }: { variant?: DiagramVariant }) {
+function CornerMarkers(props: { variant?: DiagramVariant }) {
   return (
-    <>
+    <span data-variant={props.variant ?? "blue"}>
       <span className={`${socketClass} top-0 left-0 ${cornerPos}`} />
       <span className={`${socketClass} top-0 right-0 ${cornerPos}`} />
       <span className={`${socketClass} bottom-0 right-0 ${cornerPos}`} />
       <span className={`${socketClass} bottom-0 left-0 ${cornerPos}`} />
-    </>
+    </span>
   );
 }
 

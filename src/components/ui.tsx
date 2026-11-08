@@ -1,3 +1,4 @@
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Small shared UI pieces, styled after the ENS Explorer (explorer.ens.dev):
  * entity chips (pink = contract addresses, blue = names), warm cards on
@@ -50,8 +51,9 @@ export function EntityChip({
 
 /** Contract address as a pink entity chip linking to Etherscan. */
 export function AddressLink({ address }: { address: string }) {
+  const network = useDeployment();
   return (
-    <EntityChip href={etherscanAddress(address)} title={address} variant="pink">
+    <EntityChip href={etherscanAddress(address, network.id)} title={address} variant="pink">
       {shortAddr(address)}
     </EntityChip>
   );
@@ -122,11 +124,13 @@ export function Section({
   step,
   title,
   enabled,
+  disabledMessage = "Complete the previous step first.",
   children,
 }: {
   step: number;
   title: string;
   enabled: boolean;
+  disabledMessage?: string;
   children: ReactNode;
 }) {
   return (
@@ -141,7 +145,7 @@ export function Section({
         </span>
         {title}
       </h2>
-      {enabled ? children : <p className="text-sm">Complete the previous step first.</p>}
+      {enabled ? children : <p className="text-sm">{disabledMessage}</p>}
     </section>
   );
 }

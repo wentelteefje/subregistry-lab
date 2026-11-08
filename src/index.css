@@ -80,7 +80,12 @@ body {
 
 /* ENS Explorer avatar placeholder (shown when a name has no avatar record) */
 :root {
-  --avatar-placeholder-gradient: linear-gradient(135deg, #ef7eb8 0%, #c6bef2 50%, #d6d4f8 100%);
+  --avatar-placeholder-gradient: linear-gradient(
+    135deg,
+    #ef7eb8 0%,
+    #c6bef2 50%,
+    #d6d4f8 100%
+  );
 }
 
 #root {
@@ -121,14 +126,14 @@ body {
  * Diagram theme: ENS Diagram System "protocol" mode, adapted from
  * ens-diagrams (theme.ts): lapis/100 graph-paper field, lapis/500 strokes,
  * lapis/900 ink, Marist for names, Semi-Mono for roles/addresses,
- * dark resolver stack with corner sockets.
+ * dashed contract frames, double-outline tokens and resolver names.
  */
 .diagram-canvas {
   --diagram-paper: #dbf0f8; /* lapis/100 */
   --diagram-stroke: #0082bb; /* lapis/500 */
   --diagram-ink: #02293b; /* lapis/900 */
   --diagram-node-bg: #dbf0f8;
-  --diagram-resolver-fill: color-mix(in srgb, #02293b 82%, #dbf0f8);
+  --diagram-resolver-fill: #294d5d;
   --diagram-resolver-label: #dbf0f8;
   --diagram-socket: #02293b;
   --diagram-corner-blue: #02293b;
@@ -191,4 +196,563 @@ body {
 .diagram-group {
   border-style: dotted;
   border-width: 2px;
+}
+
+/* Compact routing: native hit targets, responsive columns, no zoom transform. */
+.compact-canvas {
+  container-type: inline-size;
+  background-color: var(--diagram-paper);
+  padding: 16px;
+  border-radius: 8px;
+  background-image:
+    linear-gradient(rgba(0, 130, 187, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 130, 187, 0.1) 1px, transparent 1px),
+    linear-gradient(rgba(0, 130, 187, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 130, 187, 0.22) 1px, transparent 1px);
+  background-size:
+    8px 8px,
+    8px 8px,
+    80px 80px,
+    80px 80px;
+  color: var(--diagram-ink);
+}
+.compact-stage {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 0.9fr) 64px minmax(145px, 0.9fr)
+    64px minmax(195px, 1.2fr);
+  position: relative;
+  align-items: start;
+  gap: 0;
+  min-height: 180px;
+  padding-top: 32px;
+  padding-bottom: 4px;
+}
+.compact-parent {
+  grid-column: 1;
+  margin-top: 32px;
+  border: 1px solid var(--diagram-stroke);
+  border-radius: 9px;
+  background: var(--diagram-paper);
+  padding: 12px;
+  min-width: 0;
+}
+.compact-parent strong {
+  display: block;
+  font:
+    500 12px "ABC Monument Grotesk Semi-Mono",
+    monospace;
+  overflow-wrap: anywhere;
+}
+.compact-parent span {
+  font-size: 10px;
+  opacity: 0.7;
+  display: block;
+  margin-top: 5px;
+}
+.compact-registry-column {
+  grid-column: 3;
+  margin-top: 32px;
+  min-width: 0;
+}
+.compact-resolver-column {
+  grid-column: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.compact-contract {
+  border: 1px solid var(--diagram-stroke);
+  border-radius: 8px;
+  background: var(--diagram-paper);
+  overflow: hidden;
+  position: relative;
+}
+.compact-hit {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--diagram-ink);
+  border: 0;
+  text-align: left;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+.compact-hit-text {
+  min-width: 0;
+  flex: 1;
+}
+.compact-hit-text > span:first-child {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-name {
+  font:
+    15px "ABC Marist",
+    Georgia,
+    serif;
+}
+.compact-header {
+  min-height: 48px;
+  border-bottom: 1px solid rgba(0, 130, 187, 0.25);
+  font:
+    500 10px "ABC Monument Grotesk Semi-Mono",
+    monospace;
+}
+.compact-address {
+  display: block;
+  font-size: 9px;
+  opacity: 0.7;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.compact-chevron {
+  font: 12px sans-serif;
+  white-space: nowrap;
+  color: var(--diagram-stroke);
+}
+.compact-header .compact-chevron {
+  font-size: 9px;
+}
+.compact-under {
+  text-decoration: underline dotted;
+  text-underline-offset: 4px;
+}
+button.compact-hit {
+  cursor: pointer;
+}
+button.compact-hit:hover {
+  background: #c5e9f8;
+}
+button.compact-hit:hover .compact-under {
+  text-decoration-style: solid;
+}
+button.compact-hit:focus-visible {
+  outline: 2px solid var(--diagram-stroke);
+  outline-offset: -3px;
+}
+.compact-selected {
+  background: #b9e3f6 !important;
+  box-shadow: inset 3px 0 var(--diagram-stroke);
+}
+.compact-routes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.compact-routes path {
+  fill: none;
+  stroke: var(--diagram-stroke);
+  stroke-linejoin: round;
+}
+.compact-routes rect {
+  fill: var(--diagram-paper);
+}
+.compact-routes text {
+  font:
+    9px "ABC Monument Grotesk Semi-Mono",
+    monospace;
+  fill: var(--diagram-ink);
+}
+.compact-legend {
+  margin: 12px 0 0;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.compact-overflow {
+  font-size: 12px;
+  padding: 8px;
+}
+.compact-overflow span {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.compact-registrar {
+  border: 1px solid var(--diagram-stroke);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--diagram-paper);
+  font-size: 10px;
+  margin-bottom: 28px;
+}
+.compact-registrar span {
+  display: block;
+  font-size: 9px;
+  opacity: 0.7;
+}
+.compact-no-registry .compact-parent {
+  grid-column: 1;
+}
+.compact-no-registry .compact-resolver-column {
+  grid-column: 5;
+}
+@container (max-width:640px) {
+  .compact-stage {
+    grid-template-columns: minmax(0, 1fr) 30px minmax(0, 1.15fr);
+    row-gap: 40px;
+    padding-top: 0;
+  }
+  .compact-parent {
+    grid-column: 1/4;
+    margin-top: 0;
+    grid-row: 1;
+  }
+  .compact-registry-column {
+    grid-column: 1;
+    grid-row: 2;
+    margin-top: 0;
+  }
+  .compact-resolver-column {
+    grid-column: 3;
+    grid-row: 2;
+  }
+  .compact-no-registry .compact-resolver-column {
+    grid-column: 3;
+  }
+  .compact-no-registry .compact-parent {
+    grid-column: 1/4;
+  }
+  .compact-header .compact-chevron {
+    font-size: 0;
+  }
+  .compact-header .compact-chevron:after {
+    content: "›";
+    font-size: 16px;
+  }
+  .compact-name {
+    font-size: 13px;
+  }
+  .compact-hit {
+    padding: 8px;
+  }
+  .compact-header {
+    font-size: 9px;
+  }
+  .compact-address {
+    font-size: 8px;
+  }
+}
+
+/* Non-modal inspection drawer; overlays the page without resizing the diagram. */
+.diagram-inspector {
+  position: fixed;
+  right: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 380px;
+  max-width: 90%;
+  z-index: 50;
+  background: #fff;
+  color: #191919;
+  box-shadow: -8px 0 28px rgba(2, 41, 59, 0.14);
+  border: 1px solid #e1e1e0;
+  border-radius: 12px 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+}
+.inspection-header {
+  position: relative;
+  padding: 20px;
+  border-bottom: 1px solid #eee;
+}
+.inspection-kind {
+  font-size: 10px;
+  color: #0082bb;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.inspection-header h3 {
+  font-size: 20px;
+  line-height: 1.3;
+  margin: 7px 24px 7px 0;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+.inspection-header p {
+  font-size: 10px;
+  color: #737373;
+  overflow-wrap: anywhere;
+}
+.inspection-close {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e1e1e0;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+}
+.inspection-body {
+  padding: 20px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.inspection-fields {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px 10px;
+  font-size: 12px;
+  margin: 0;
+}
+.inspection-fields dt {
+  color: #737373;
+}
+.inspection-fields dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.inspection-address {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.inspection-address a {
+  font-size: 10px;
+  color: #0082bb;
+}
+.inspection-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.inspection-copy code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+  min-width: 0;
+}
+.inspection-copy button {
+  font-size: 9px;
+  color: #0082bb;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.inspection-spaced {
+  margin-top: 18px;
+}
+.inspection-body h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #737373;
+  margin: 22px 0 12px;
+}
+.inspection-muted {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #737373;
+  margin-top: 8px;
+}
+.inspection-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.inspection-tags > span {
+  font-size: 10px;
+  border: 1px solid #b6d9e8;
+  background: #eff8fc;
+  color: #226783;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.inspection-tags > .inspection-role-admin {
+  border-color: #f5b6d9;
+  background: var(--color-magenta-100);
+  color: #a61666;
+}
+.inspection-role-kind {
+  font-weight: 600;
+}
+.inspection-advanced {
+  border-top: 1px solid #eee;
+  margin-top: 16px;
+  padding-top: 12px;
+  font-size: 11px;
+}
+.inspection-advanced summary {
+  cursor: pointer;
+  color: #737373;
+  margin-bottom: 10px;
+}
+.inspection-link {
+  color: #0082bb;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.inspection-scope {
+  padding: 12px;
+  border: 1px solid #d0e8f4;
+  background: #ebf7fd;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #365c70;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.inspection-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 11px;
+  border: 1px solid #e3e9ed;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  margin-bottom: 8px;
+}
+.inspection-nav span {
+  color: #0082bb;
+}
+.inspection-nav:hover {
+  background: #ebf7fd;
+}
+.inspection-record {
+  border-bottom: 1px solid #eee;
+  padding: 12px 0;
+}
+.inspection-record > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.inspection-record details {
+  font-size: 10px;
+  color: #737373;
+  margin-top: 8px;
+}
+.inspection-record summary {
+  cursor: pointer;
+}
+.inspection-record .inspection-muted {
+  margin: 0;
+}
+.inspection-notice {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 10px;
+  border: 1px solid #f0deb0;
+  background: #fff9ea;
+  border-radius: 6px;
+  margin: 14px 0;
+}
+.inspection-empty {
+  padding: 20px 12px;
+  border: 1px dashed #d3dde4;
+  border-radius: 7px;
+  text-align: center;
+  margin-top: 18px;
+  font-size: 12px;
+}
+.inspection-empty p {
+  font-size: 11px;
+  color: #737373;
+  margin-top: 7px;
+}
+.inspection-footer {
+  border-top: 1px solid #eee;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: #737373;
+}
+.inspection-footer button {
+  color: #0082bb;
+  cursor: pointer;
+}
+.inspection-lookup {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.inspection-lookup select,
+.inspection-lookup input,
+.inspection-lookup button {
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 7px;
+  min-width: 0;
+}
+.inspection-lookup input {
+  flex: 1;
+  width: 120px;
+}
+.inspection-lookup button {
+  cursor: pointer;
+}
+.diagram-inspector button:focus-visible,
+.diagram-inspector summary:focus-visible,
+.diagram-inspector a:focus-visible {
+  outline: 2px solid #0082bb;
+  outline-offset: 2px;
+}
+@media (max-width: 760px) {
+  .diagram-inspector {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-width: none;
+    height: 65dvh;
+    max-height: calc(100dvh - 80px);
+    border-radius: 14px 14px 0 0;
+  }
+  .inspection-header {
+    padding: 18px 16px 12px;
+  }
+  .inspection-body {
+    padding: 16px;
+  }
+  .inspection-header h3 {
+    font-size: 18px;
+  }
+  .inspection-footer {
+    padding: 12px 16px;
+  }
+}
+
+.compact-row-note {
+  display: block;
+  font:
+    9px "ABC Monument Grotesk Semi-Mono",
+    monospace;
+  opacity: 0.7;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
 }

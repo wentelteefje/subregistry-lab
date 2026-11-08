@@ -1,3 +1,5 @@
+import { useLockStatus } from "../hooks/useLockStatus";
+import { useDeployment } from "../hooks/useDeployment";
 /**
  * Advanced: irreversible lock steps for the "unruggable" setup.
  * Each step requires typing the parent name to confirm, and proves the
@@ -8,7 +10,7 @@ import { useState } from "react";
 import { useAccount, usePublicClient } from "wagmi";
 import type { Abi } from "viem";
 import { registryAbi } from "../config/abis";
-import { deployments } from "../config/deployments";
+
 import { classifyError } from "../lib/errors";
 import { labelhashId } from "../lib/names";
 import {
@@ -24,39 +26,53 @@ import { TxStepper } from "./TxStepper";
 import { WarningBox, Badge } from "./ui";
 
 export function LockPanel() {
+  const network = useDeployment();
+  const deployments = network.addresses;
   const { address } = useAccount();
   const ready = useIsReady();
   const client = usePublicClient();
-  const { session, dispatch } = useLab();
+  const { session } = useLab();
   const sequence = useTxSequence("lock");
   const [confirmText, setConfirmText] = useState("");
   const [activePlan, setActivePlan] = useState<StepDef[]>([]);
   const [error, setError] = useState<string>();
+
+  const {
+    registryLocked,
+    linkLocked,
+    supported,
+    loading: lockLoading,
+    refetch: refetchLock,
+  } = useLockStatus(session?.addresses.userRegistry, session?.parentLabel);
 
   if (!session || !address || !session.addresses.userRegistry) return null;
   const registry = session.addresses.userRegistry;
   const parentName = `${session.parentLabel}.eth`;
   const confirmed = confirmText.trim().toLowerCase() === parentName;
 
-  const runLock = async (plan: StepDef[], onDone: () => void) => {
+  const runLock = async (plan: StepDef[]) => {
     setError(undefined);
     sequence.reset();
     setActivePlan(plan);
     const ctx: StepCtx = {
+      chainId: network.id,
       account: address,
       parentLabel: session.parentLabel,
       ownerInitBitmap: 0n,
       deployResolver: false,
       userRegistry: registry,
     };
-    const result = await sequence.run(plan, ctx);
-    if (result) onDone();
+    await sequence.run(plan, ctx);
+    void refetchLock();
   };
 
   const lockRegistry = () =>
     runLock(
-      buildRevokeRegistryRolesStep({ userRegistry: registry, account: address }),
-      () => dispatch({ type: "set-locked", patch: { registryLocked: true } }),
+      buildRevokeRegistryRolesStep({
+        chainId: network.id,
+        userRegistry: registry,
+        account: address,
+      }),
     );
 
   const lockLink = async () => {
@@ -71,11 +87,11 @@ export function LockPanel() {
       })) as bigint;
       await runLock(
         buildLockParentLinkStep({
+          chainId: network.id,
           parentLabel: session.parentLabel,
           parentResource: resource,
           account: address,
         }),
-        () => dispatch({ type: "set-locked", patch: { linkLocked: true } }),
       );
     } catch (err) {
       setError(classifyError(err).message);
@@ -85,33 +101,38 @@ export function LockPanel() {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm">
-        These actions permanently remove your own permissions, that's what makes subnames
-        unruggable. On a testnet there's nothing to lose, but the mechanics are identical
-        on mainnet: <strong>there is no undo</strong>.
+        These actions remove permissions permanently for the current
+        registration. Keep the parent .eth name renewed; expiry and
+        re-registration can replace its subregistry.{" "}
+        <strong>There is no undo</strong>.
       </p>
 
       <div className="flex flex-col gap-2 rounded-lg border border-neutral-200 p-4">
         <div className="flex items-center justify-between">
           <h4 className="font-medium">1. Give up dangerous registry roles</h4>
-          {session.locked.registryLocked && <Badge tone="green">done</Badge>}
+          {registryLocked && <Badge tone="green">done</Badge>}
         </div>
         <WarningBox>
-          Irreversible: after this, nobody (including you) can delete, renew, re-point, or
-          upgrade anything in this registry, and the registry's parent pointer (recorded
-          during setup) is frozen. New subnames can still be registered.
+          After every holder revokes the listed root permissions, root accounts
+          cannot delete, renew, re-point, or upgrade anything in this registry,
+          and the registry's parent pointer (recorded during setup) is frozen.
+          New subnames can still be registered.
         </WarningBox>
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg border border-neutral-200 p-4">
         <div className="flex items-center justify-between">
-          <h4 className="font-medium">2. Lock your name's registry pointer (optional)</h4>
-          {session.locked.linkLocked && <Badge tone="green">done</Badge>}
+          <h4 className="font-medium">
+            2. Lock your name's registry pointer (optional)
+          </h4>
+          {linkLocked && <Badge tone="green">done</Badge>}
         </div>
         <WarningBox>
-          Irreversible: you give up the permission to change which registry {parentName}{" "}
-          points at (its subregistry pointer in the .eth registry, not the registry's own
-          parent metadata). You can never unlink or replace this subregistry again,
-          "Replace with a new setup" and "Re-link" stop working for this name.
+          Irreversible: you give up the permission to change which registry{" "}
+          {parentName} points at (its subregistry pointer in the .eth registry,
+          not the registry's own parent metadata). This locks the current parent
+          registration; it does not survive expiry and re-registration. Keep the
+          parent name renewed to preserve the link.
         </WarningBox>
       </div>
 
@@ -129,7 +150,14 @@ export function LockPanel() {
         </label>
         <button
           type="button"
-          disabled={!ready || !confirmed || session.locked.registryLocked || sequence.status === "running"}
+          disabled={
+            !supported ||
+            lockLoading ||
+            !ready ||
+            !confirmed ||
+            registryLocked ||
+            sequence.status === "running"
+          }
           onClick={lockRegistry}
           className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
         >
@@ -137,7 +165,9 @@ export function LockPanel() {
         </button>
         <button
           type="button"
-          disabled={!ready || !confirmed || session.locked.linkLocked || sequence.status === "running"}
+          disabled={
+            !ready || !confirmed || linkLocked || sequence.status === "running"
+          }
           onClick={lockLink}
           className="rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-40"
         >
@@ -145,11 +175,18 @@ export function LockPanel() {
         </button>
       </div>
 
+      {!supported && !lockLoading && (
+        <p className="text-sm text-amber-800">
+          This registry does not support current lock verification. Registry
+          locking is unavailable.
+        </p>
+      )}
       {error && <p className="text-sm text-red-700">{error}</p>}
       {activePlan.length > 0 && (
         <TxStepper
           plan={activePlan}
           steps={sequence.steps}
+          error={sequence.error}
           running={sequence.status === "running"}
         />
       )}

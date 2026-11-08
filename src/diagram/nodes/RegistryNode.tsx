@@ -23,20 +23,45 @@ function RegistryNode({ data, selected }: NodeProps<RegistryNodeType>) {
       `}
     >
       {/* Named handles on all four sides so edges can route without detours. */}
-      <Handle id="left" type="target" position={Position.Left} className={handleClass} />
-      <Handle id="top" type="target" position={Position.Top} className={handleClass} />
+      <Handle
+        id="left"
+        type="target"
+        position={Position.Left}
+        className={handleClass}
+      />
+      <Handle
+        id="top"
+        type="target"
+        position={Position.Top}
+        className={handleClass}
+      />
       <div className="rounded-[10px] border-[1.5px] border-[var(--diagram-stroke)] px-4 py-2.5 text-[var(--diagram-ink)]">
-        <div className="diagram-semimono font-medium text-[var(--diagram-font-main)] leading-tight">
+        <div title={data.label} className="diagram-semimono truncate font-medium text-[var(--diagram-font-main)] leading-tight">
           {data.label}
+          {data.example && (
+            <span className="ml-2 rounded border border-[var(--diagram-stroke)] px-1 text-[9px] font-normal align-middle">
+              example
+            </span>
+          )}
         </div>
         {data.subtitle != null && data.subtitle !== "" && (
-          <div className="diagram-semimono text-[var(--diagram-font-sub)] font-normal opacity-75 mt-0.5">
+          <div title={data.subtitle} className="diagram-semimono truncate text-[var(--diagram-font-sub)] font-normal opacity-75 mt-0.5">
             {data.subtitle}
           </div>
         )}
       </div>
-      <Handle id="right" type="source" position={Position.Right} className={handleClass} />
-      <Handle id="bottom" type="source" position={Position.Bottom} className={handleClass} />
+      <Handle
+        id="right"
+        type="source"
+        position={Position.Right}
+        className={handleClass}
+      />
+      <Handle
+        id="bottom"
+        type="source"
+        position={Position.Bottom}
+        className={handleClass}
+      />
     </div>
   );
 }

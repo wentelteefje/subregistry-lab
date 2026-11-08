@@ -163,7 +163,7 @@ export const ROLE_CATALOG: RoleCatalogEntry[] = [
     adminLabel: "",
     subnameLabel: "Transfer their subname",
     subnameDetail:
-      "Allows the subname token to be sent to another wallet (the registry checks this on the sender at transfer time). Without it, the subname is locked to its current owner. This permission only exists in admin form, so its holder can also delegate it.",
+      "Allows the owner to transfer the subname. Standard safe transfers also require the registry to be emancipated; the explicit unsafe transfer path bypasses that safety check. Without it, the subname is locked to its current owner. This permission only exists in admin form.",
     adminOnly: true,
   },
 ];

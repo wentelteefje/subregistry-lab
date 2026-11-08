@@ -1,3 +1,4 @@
+import { packetToBytes } from "viem/ens";
 /**
  * Pure transaction-plan builders. A StepDef describes one transaction:
  * how to build it, how to extract results from its receipt, and how to
@@ -7,6 +8,10 @@
 
 import {
   encodeFunctionData,
+  toHex,
+  encodeAbiParameters,
+  decodeFunctionResult,
+  keccak256,
   parseEventLogs,
   zeroAddress,
   type Abi,
@@ -18,11 +23,12 @@ import {
   erc20Abi,
   registryAbi,
   resolverInitAbi,
+  resolverAbi,
   simpleRegistrarAbi,
   userRegistryInitAbi,
   verifiableFactoryAbi,
 } from "../config/abis";
-import { deployments } from "../config/deployments";
+import { getDeployment } from "../config/deployments";
 import { labelhashId } from "./names";
 import { deriveSalt } from "./salt";
 import { ALL_ROLES } from "./roles";
@@ -58,9 +64,14 @@ export type ReadFn = (params: {
   abi: Abi;
   functionName: string;
   args: readonly unknown[];
+  blockNumber?: bigint;
 }) => Promise<unknown>;
 
 export type StepCtx = {
+  chainId?: number;
+  setupNonce?: string;
+  expectedAddresses?: { userRegistry?: Address; resolver?: Address };
+  reviewedRequests?: Record<string, `0x${string}`>;
   account: Address;
   parentLabel: string;
   ownerInitBitmap: bigint;
@@ -76,8 +87,9 @@ export type StepCtx = {
   userRegistry?: Address;
   resolver?: Address;
   registrar?: Address;
-  /** A subname's OWN resolver (switch flow); deliberately not persisted to the session. */
+  /** A subname's own resolver, cached by full name for switch-flow recovery. */
   subResolver?: Address;
+  subResolverName?: string;
 };
 
 export type StepDef = {
@@ -88,7 +100,17 @@ export type StepDef = {
   skipIf?: (ctx: StepCtx) => boolean;
   build: (ctx: StepCtx) => StepAction;
   onReceipt?: (receipt: TransactionReceipt, ctx: StepCtx) => Partial<StepCtx>;
-  verify?: (read: ReadFn, ctx: StepCtx) => Promise<{ ok: boolean; detail: string }>;
+  preflight?: boolean;
+  intentSeed?: string;
+  targetName?: string;
+  registryDeployBlock?: string;
+  capture?: "userRegistry" | "resolver" | "registrar" | "subResolver";
+  needs?: ("userRegistry" | "resolver" | "registrar")[];
+  guard?: (read: ReadFn, ctx: StepCtx) => Promise<void>;
+  verify?: (
+    read: ReadFn,
+    ctx: StepCtx,
+  ) => Promise<{ ok: boolean; detail: string }>;
 };
 
 const registrarAbi = registrarArtifact.abi as Abi;
@@ -104,36 +126,61 @@ function parseProxyAddress(receipt: TransactionReceipt): Address {
   return log.args.proxyAddress;
 }
 
+function checkedProxyAddress(
+  receipt: TransactionReceipt,
+  expected?: Address,
+): Address {
+  const actual = parseProxyAddress(receipt);
+  if (expected && actual.toLowerCase() !== expected.toLowerCase())
+    throw new Error(
+      `Deployed address ${actual} differs from reviewed address ${expected}. Stop and inspect the transaction.`,
+    );
+  return actual;
+}
+
 /** The main setup sequence for a preset. */
-export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
+export function buildSetupSteps(
+  preset: Preset | PresetId,
+  chainId = 11155111,
+): StepDef[] {
+  const deployments = getDeployment(chainId).addresses;
   const p = typeof preset === "string" ? getPreset(preset) : preset;
 
   const steps: StepDef[] = [
     {
       id: "deploy-registry",
+      capture: "userRegistry",
+      intentSeed: "registry",
       title: "Deploy your subname registry",
-      explain: "Creates a fresh UserRegistry contract that will hold your subnames.",
+      explain:
+        "Creates a fresh UserRegistry contract that will hold your subnames.",
       build: (ctx) => ({
         type: "write",
         address: deployments.VerifiableFactory,
-        abi: verifiableFactoryAbi as unknown as Abi,
+        abi: verifiableFactoryAbi,
         functionName: "deployProxy",
         args: [
           deployments.UserRegistryImpl,
-          deriveSalt(ctx.parentLabel),
+          deriveSalt(ctx.parentLabel, ctx.setupNonce),
           encodeFunctionData({
             abi: userRegistryInitAbi,
             functionName: "initialize",
-            args: [ctx.account, ctx.ownerInitBitmap],
+            args: [[{ account: ctx.account, roleBitmap: ctx.ownerInitBitmap }]],
           }),
         ],
       }),
-      onReceipt: (receipt) => ({ userRegistry: parseProxyAddress(receipt) }),
+      onReceipt: (receipt, ctx) => ({
+        userRegistry: checkedProxyAddress(
+          receipt,
+          ctx.expectedAddresses?.userRegistry,
+        ),
+      }),
       verify: async (read, ctx) => {
-        if (!ctx.userRegistry) return { ok: false, detail: "No registry address captured" };
+        if (!ctx.userRegistry)
+          return { ok: false, detail: "No registry address captured" };
         const ok = (await read({
           address: ctx.userRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "hasRootRoles",
           args: [ctx.ownerInitBitmap, ctx.account],
         })) as boolean;
@@ -147,45 +194,64 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
     },
     {
       id: "deploy-resolver",
+      capture: "resolver",
+      intentSeed: "resolver",
       title: "Deploy a resolver",
-      explain: "Creates a resolver contract so your subnames can hold address records.",
+      explain:
+        "Creates a resolver contract so your subnames can hold address records.",
       skipIf: (ctx) => !ctx.deployResolver,
       build: (ctx) => ({
         type: "write",
         address: deployments.VerifiableFactory,
-        abi: verifiableFactoryAbi as unknown as Abi,
+        abi: verifiableFactoryAbi,
         functionName: "deployProxy",
         args: [
           deployments.PermissionedResolverImpl,
-          deriveSalt(`${ctx.parentLabel}-resolver`),
+          deriveSalt(`${ctx.parentLabel}-resolver`, ctx.setupNonce),
           encodeFunctionData({
             abi: resolverInitAbi,
             functionName: "initialize",
-            args: [ctx.account, ALL_ROLES],
+            args: [[{ account: ctx.account, roleBitmap: ALL_ROLES }], []],
           }),
         ],
       }),
-      onReceipt: (receipt) => ({ resolver: parseProxyAddress(receipt) }),
+      onReceipt: (receipt, ctx) => ({
+        resolver: checkedProxyAddress(receipt, ctx.expectedAddresses?.resolver),
+      }),
+      verify: async (read, ctx) => {
+        if (!ctx.resolver)
+          return { ok: false, detail: "No resolver address captured" };
+        const ok = await read({
+          address: ctx.resolver,
+          abi: resolverAbi,
+          functionName: "hasRootRoles",
+          args: [ALL_ROLES, ctx.account],
+        });
+        return { ok: Boolean(ok), detail: "Resolver administrator verified" };
+      },
     },
     {
       id: "link",
+      needs: ["userRegistry"],
       title: "Point your name at the new registry",
-      explain: "Tells the .eth registry that subnames of your name live in your new registry.",
+      explain:
+        "Tells the .eth registry that subnames of your name live in your new registry.",
       build: (ctx) => ({
         type: "write",
         address: deployments.ETHRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "setSubregistry",
         args: [labelhashId(ctx.parentLabel), ctx.userRegistry],
       }),
       verify: async (read, ctx) => {
         const linked = (await read({
           address: deployments.ETHRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getSubregistry",
           args: [ctx.parentLabel],
         })) as Address;
-        const ok = linked.toLowerCase() === (ctx.userRegistry ?? "").toLowerCase();
+        const ok =
+          linked.toLowerCase() === (ctx.userRegistry ?? "").toLowerCase();
         return {
           ok,
           detail: ok
@@ -196,6 +262,7 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
     },
     {
       id: "set-parent-resolver",
+      needs: ["resolver"],
       title: "Point your name at the resolver",
       explain:
         "Sets your name's resolver on the .eth registry. The app treats whatever the parent points at as the setup's shared resolver, so this keeps parent and subnames in sync.",
@@ -205,14 +272,14 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
       build: (ctx) => ({
         type: "write",
         address: deployments.ETHRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "setResolver",
         args: [labelhashId(ctx.parentLabel), ctx.resolver],
       }),
       verify: async (read, ctx) => {
         const linked = (await read({
           address: deployments.ETHRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getResolver",
           args: [ctx.parentLabel],
         })) as Address;
@@ -227,20 +294,21 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
     },
     {
       id: "set-parent",
+      needs: ["userRegistry"],
       title: "Record the parent pointer",
       explain:
         "Stores which name this registry serves (metadata used by explorers and indexers; resolution doesn't depend on it, but it can't be set anymore after locking).",
       build: (ctx) => ({
         type: "write",
         address: ctx.userRegistry!,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "setParent",
         args: [deployments.ETHRegistry, ctx.parentLabel],
       }),
       verify: async (read, ctx) => {
         const [parent, label] = (await read({
           address: ctx.userRegistry!,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getParent",
           args: [],
         })) as [Address, string];
@@ -257,8 +325,11 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
     },
     {
       id: "deploy-registrar",
+      needs: ["userRegistry"],
+      capture: "registrar",
+      intentSeed: "registrar",
       title: "Deploy the subname registrar",
-      explain: "Creates the contract that sells subnames for test USDC.",
+      explain: "Creates the contract that sells subnames for USDC.",
       skipIf: (ctx) => !ctx.registrarParams,
       build: (ctx) => ({
         type: "deploy",
@@ -266,33 +337,36 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
         bytecode: registrarBytecode,
         args: [
           ctx.userRegistry,
-          deployments.MockUSDC,
+          deployments.PaymentToken,
           ctx.registrarParams!.beneficiary,
           ctx.registrarParams!.pricePerYear,
           ctx.registrarParams!.minDuration,
         ],
       }),
       onReceipt: (receipt) => {
-        if (!receipt.contractAddress) throw new Error("No contract address in deploy receipt");
+        if (!receipt.contractAddress)
+          throw new Error("No contract address in deploy receipt");
         return { registrar: receipt.contractAddress };
       },
     },
     {
       id: "grant-registrar",
+      needs: ["userRegistry", "registrar"],
       title: "Authorize the registrar",
-      explain: "Allows the registrar contract to register and renew subnames in your registry.",
+      explain:
+        "Allows the registrar contract to register and renew subnames in your registry.",
       skipIf: (ctx) => !ctx.registrarParams,
       build: (ctx) => ({
         type: "write",
         address: ctx.userRegistry!,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "grantRootRoles",
         args: [ctx.registrarParams!.grantBitmap, ctx.registrar],
       }),
       verify: async (read, ctx) => {
         const ok = (await read({
           address: ctx.userRegistry!,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "hasRootRoles",
           args: [ctx.registrarParams!.grantBitmap, ctx.registrar],
         })) as boolean;
@@ -313,6 +387,7 @@ export function buildSetupSteps(preset: Preset | PresetId): StepDef[] {
 
 /** Direct owner registration of a subname (no registrar, no payment). */
 export function buildDirectRegisterStep(params: {
+  chainId?: number;
   userRegistry: Address;
   label: string;
   owner: Address;
@@ -323,6 +398,7 @@ export function buildDirectRegisterStep(params: {
   return [
     {
       id: "direct-register",
+      preflight: false,
       title: `Register ${params.label}`,
       explain:
         params.expiry === MAX_EXPIRY
@@ -331,7 +407,7 @@ export function buildDirectRegisterStep(params: {
       build: () => ({
         type: "write",
         address: params.userRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "register",
         args: [
           params.label,
@@ -345,11 +421,37 @@ export function buildDirectRegisterStep(params: {
       verify: async (read) => {
         const state = (await read({
           address: params.userRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getState",
           args: [labelhashId(params.label)],
-        })) as { latestOwner: Address };
-        const ok = state.latestOwner.toLowerCase() === params.owner.toLowerCase();
+        })) as { latestOwner: Address; status: number; expiry: bigint };
+        const [resolver, subregistry, roles] = await Promise.all([
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "getResolver",
+            args: [params.label],
+          }),
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "getSubregistry",
+            args: [params.label],
+          }),
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "roles",
+            args: [labelhashId(params.label), params.owner],
+          }),
+        ]);
+        const ok =
+          state.status === 2 &&
+          state.expiry === params.expiry &&
+          state.latestOwner.toLowerCase() === params.owner.toLowerCase() &&
+          String(resolver).toLowerCase() === params.resolver.toLowerCase() &&
+          String(subregistry).toLowerCase() === zeroAddress &&
+          ((roles as bigint) & params.roleBitmap) === params.roleBitmap;
         return {
           ok,
           detail: ok
@@ -363,48 +465,87 @@ export function buildDirectRegisterStep(params: {
 
 /** Paid registration through the SimpleSubnameRegistrar: approve (if needed) + register. */
 export function buildRegistrarRegisterSteps(params: {
+  chainId?: number;
   registrar: Address;
   userRegistry: Address;
   label: string;
   owner: Address;
   resolver: Address;
   duration: bigint; // seconds
-  price: bigint; // MockUSDC 6-decimals, pre-read via getPrice
+  price: bigint; // USDC 6-decimals, pre-read via getPrice
   currentAllowance: bigint;
+  payer?: Address;
+  renewFromExpiry?: bigint;
 }): StepDef[] {
+  const deployments = getDeployment(params.chainId).addresses;
   return [
     {
       id: "approve-usdc",
-      title: "Approve test USDC",
-      explain: "Allows the registrar to take the registration fee from your wallet.",
-      skipIf: () => params.currentAllowance >= params.price,
+      title: "Approve USDC",
+      explain:
+        "Allows the registrar to take the registration fee from your wallet.",
+      verify: async (read) => {
+        const allowance = await read({
+          address: deployments.PaymentToken,
+          abi: erc20Abi,
+          functionName: "allowance",
+          args: [params.payer ?? params.owner, params.registrar],
+        });
+        return {
+          ok: (allowance as bigint) >= params.price,
+          detail: "Payment allowance verified",
+        };
+      },
       build: () => ({
         type: "write",
-        address: deployments.MockUSDC,
-        abi: erc20Abi as unknown as Abi,
+        address: deployments.PaymentToken,
+        abi: erc20Abi,
         functionName: "approve",
         args: [params.registrar, params.price],
       }),
     },
     {
       id: "registrar-register",
-      title: `Register ${params.label} (paid)`,
+      preflight: false,
+      title: `${params.renewFromExpiry === undefined ? "Register" : "Renew"} ${params.label} (paid)`,
       explain: "Registers the subname through the registrar, paying the fee.",
       build: () => ({
         type: "write",
         address: params.registrar,
-        abi: simpleRegistrarAbi as unknown as Abi,
-        functionName: "register",
-        args: [params.label, params.owner, params.resolver, params.duration],
+        abi: simpleRegistrarAbi,
+        functionName:
+          params.renewFromExpiry === undefined ? "register" : "renew",
+        args:
+          params.renewFromExpiry === undefined
+            ? [params.label, params.owner, params.resolver, params.duration]
+            : [params.label, params.duration],
       }),
       verify: async (read) => {
         const state = (await read({
           address: params.userRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getState",
           args: [labelhashId(params.label)],
-        })) as { latestOwner: Address };
-        const ok = state.latestOwner.toLowerCase() === params.owner.toLowerCase();
+        })) as { latestOwner: Address; status: number; expiry: bigint };
+        const resolver =
+          params.renewFromExpiry === undefined
+            ? await read({
+                address: params.userRegistry,
+                abi: registryAbi,
+                functionName: "getResolver",
+                args: [params.label],
+              })
+            : undefined;
+        const expectedExpiry =
+          params.renewFromExpiry === undefined
+            ? 0n
+            : params.renewFromExpiry + params.duration;
+        const ok =
+          state.status === 2 &&
+          state.expiry >= expectedExpiry &&
+          state.latestOwner.toLowerCase() === params.owner.toLowerCase() &&
+          (params.renewFromExpiry !== undefined ||
+            String(resolver).toLowerCase() === params.resolver.toLowerCase());
         return {
           ok,
           detail: ok
@@ -418,6 +559,7 @@ export function buildRegistrarRegisterSteps(params: {
 
 /** Lock step 1: give up dangerous root roles on the UserRegistry. */
 export function buildRevokeRegistryRolesStep(params: {
+  chainId?: number;
   userRegistry: Address;
   account: Address;
 }): StepDef[] {
@@ -427,25 +569,68 @@ export function buildRevokeRegistryRolesStep(params: {
       title: "Give up dangerous registry roles",
       explain:
         "Revokes your own delete/renew/re-point/upgrade permissions on the registry. Irreversible.",
+      guard: async (read) => {
+        const [roles, counts] = await Promise.all([
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "roles",
+            args: [0n, params.account],
+          }),
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "roleCount",
+            args: [0n],
+          }),
+        ]);
+        if (
+          ((counts as bigint) & (DANGEROUS_ROOT_BITMAP * 15n)) !==
+          ((roles as bigint) & DANGEROUS_ROOT_BITMAP)
+        ) {
+          throw new Error(
+            "Other accounts hold lock permissions. Revoke those grants before removing your own admin roles.",
+          );
+        }
+      },
       build: () => ({
         type: "write",
         address: params.userRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "revokeRootRoles",
         args: [DANGEROUS_ROOT_BITMAP, params.account],
       }),
       verify: async (read) => {
-        const still = (await read({
-          address: params.userRegistry,
-          abi: registryAbi as unknown as Abi,
-          functionName: "hasRootRoles",
-          args: [DANGEROUS_ROOT_BITMAP, params.account],
-        })) as boolean;
+        const [roles, emancipated, counts] = await Promise.all([
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "roles",
+            args: [0n, params.account],
+          }),
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "isEmancipated",
+            args: [],
+          }),
+          read({
+            address: params.userRegistry,
+            abi: registryAbi,
+            functionName: "roleCount",
+            args: [0n],
+          }),
+        ]);
+        // roleCount uses four-bit counters; expand the bitmap to cover every counter bit.
+        const mask = DANGEROUS_ROOT_BITMAP * 15n;
+        const empty = ((roles as bigint) & DANGEROUS_ROOT_BITMAP) === 0n;
+        const noAssignees = ((counts as bigint) & mask) === 0n;
         return {
-          ok: !still,
-          detail: still
-            ? "Roles are still present"
-            : "Dangerous roles are gone: nobody can delete or re-point subnames now",
+          ok: empty && Boolean(emancipated) && noAssignees,
+          detail:
+            empty && noAssignees && emancipated
+              ? "Registry lock verified across all root assignees"
+              : "Root permissions remain; all holders must revoke them before the registry is locked",
         };
       },
     },
@@ -458,10 +643,12 @@ export function buildRevokeRegistryRolesStep(params: {
  * (it embeds a version counter; the canonical id is NOT the resource).
  */
 export function buildLockParentLinkStep(params: {
+  chainId?: number;
   parentLabel: string;
   parentResource: bigint; // pre-read via ETHRegistry.getResource(labelhashId(label))
   account: Address;
 }): StepDef[] {
+  const deployments = getDeployment(params.chainId).addresses;
   const bitmap = ROLE_SET_SUBREGISTRY | adminOf(ROLE_SET_SUBREGISTRY);
   return [
     {
@@ -469,27 +656,60 @@ export function buildLockParentLinkStep(params: {
       title: "Lock your name's registry pointer",
       explain:
         "Revokes your permission to change which registry your .eth name points at. Irreversible.",
+      guard: async (read) => {
+        const [roles, counts] = await Promise.all([
+          read({
+            address: deployments.ETHRegistry,
+            abi: registryAbi,
+            functionName: "roles",
+            args: [params.parentResource, params.account],
+          }),
+          read({
+            address: deployments.ETHRegistry,
+            abi: registryAbi,
+            functionName: "roleCount",
+            args: [params.parentResource],
+          }),
+        ]);
+        if (
+          ((counts as bigint) & (bitmap * 15n)) !==
+          ((roles as bigint) & bitmap)
+        ) {
+          throw new Error(
+            "Other accounts hold lock permissions. Revoke those grants before removing your own admin roles.",
+          );
+        }
+      },
       build: () => ({
         type: "write",
         address: deployments.ETHRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "revokeRoles",
         args: [params.parentResource, bitmap, params.account],
       }),
       verify: async (read) => {
-        // Re-read the resource: role changes regenerate ids but the resource is stable
-        // across role updates (it only changes on re-registration).
-        const still = (await read({
-          address: deployments.ETHRegistry,
-          abi: registryAbi as unknown as Abi,
-          functionName: "hasRoles",
-          args: [params.parentResource, bitmap, params.account],
-        })) as boolean;
+        const [roles, counts] = await Promise.all([
+          read({
+            address: deployments.ETHRegistry,
+            abi: registryAbi,
+            functionName: "roles",
+            args: [params.parentResource, params.account],
+          }),
+          read({
+            address: deployments.ETHRegistry,
+            abi: registryAbi,
+            functionName: "roleCount",
+            args: [params.parentResource],
+          }),
+        ]);
+        const empty = ((roles as bigint) & bitmap) === 0n;
+        const noAssignees = ((counts as bigint) & (bitmap * 15n)) === 0n;
         return {
-          ok: !still,
-          detail: still
-            ? "Link permission still present"
-            : "Parent link is locked: this registry can never be swapped out",
+          ok: empty && noAssignees,
+          detail:
+            empty && noAssignees
+              ? "Parent resource permissions removed; keep the parent name renewed"
+              : "Link permissions remain on this resource; other assignees may need to revoke theirs",
         };
       },
     },
@@ -498,33 +718,39 @@ export function buildLockParentLinkStep(params: {
 
 /** Re-link a previously deployed registry to the parent name. */
 export function buildRelinkStep(params: {
+  chainId?: number;
   parentLabel: string;
   registry: Address;
+  registryDeployBlock?: bigint;
 }): StepDef[] {
+  const deployments = getDeployment(params.chainId).addresses;
   return [
     {
       id: "relink",
+      registryDeployBlock: params.registryDeployBlock?.toString(),
       title: `Re-link registry ${params.registry.slice(0, 6)}…`,
       explain:
         "Points your name back at this registry. Its subnames resolve again; the currently linked registry keeps its subnames and can be re-linked later too.",
       build: () => ({
         type: "write",
         address: deployments.ETHRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "setSubregistry",
         args: [labelhashId(params.parentLabel), params.registry],
       }),
       verify: async (read) => {
         const linked = (await read({
           address: deployments.ETHRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getSubregistry",
           args: [params.parentLabel],
         })) as Address;
         const ok = linked.toLowerCase() === params.registry.toLowerCase();
         return {
           ok,
-          detail: ok ? `${params.parentLabel}.eth now points at ${linked}` : `Link is ${linked}`,
+          detail: ok
+            ? `${params.parentLabel}.eth now points at ${linked}`
+            : `Link is ${linked}`,
         };
       },
     },
@@ -536,22 +762,27 @@ export function buildRelinkStep(params: {
  * PermissionedResolver proxy, then point the subname at it.
  */
 export function buildSwitchResolverSteps(params: {
+  chainId?: number;
   userRegistry: Address;
   parentLabel: string;
   label: string;
   /** Subname owner: becomes the new resolver's admin. */
   owner: Address;
 }): StepDef[] {
+  const deployments = getDeployment(params.chainId).addresses;
   const fqdnStr = `${params.label}.${params.parentLabel}.eth`;
   return [
     {
       id: "deploy-sub-resolver",
+      capture: "subResolver",
+      intentSeed: fqdnStr,
+      targetName: fqdnStr,
       title: `Deploy an own resolver for ${fqdnStr}`,
       explain: "Creates a fresh resolver administered by the subname's owner.",
       build: () => ({
         type: "write",
         address: deployments.VerifiableFactory,
-        abi: verifiableFactoryAbi as unknown as Abi,
+        abi: verifiableFactoryAbi,
         functionName: "deployProxy",
         args: [
           deployments.PermissionedResolverImpl,
@@ -559,16 +790,20 @@ export function buildSwitchResolverSteps(params: {
           encodeFunctionData({
             abi: resolverInitAbi,
             functionName: "initialize",
-            args: [params.owner, ALL_ROLES],
+            args: [[{ account: params.owner, roleBitmap: ALL_ROLES }], []],
           }),
         ],
       }),
-      onReceipt: (receipt) => ({ subResolver: parseProxyAddress(receipt) }),
+      onReceipt: (receipt) => ({
+        subResolver: parseProxyAddress(receipt),
+        subResolverName: fqdnStr,
+      }),
       verify: async (read, ctx) => {
-        if (!ctx.subResolver) return { ok: false, detail: "No resolver address captured" };
+        if (!ctx.subResolver)
+          return { ok: false, detail: "No resolver address captured" };
         const ok = (await read({
           address: ctx.subResolver,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "hasRootRoles",
           args: [ALL_ROLES, params.owner],
         })) as boolean;
@@ -588,38 +823,49 @@ export function buildSwitchResolverSteps(params: {
       build: (ctx) => ({
         type: "write",
         address: params.userRegistry,
-        abi: registryAbi as unknown as Abi,
+        abi: registryAbi,
         functionName: "setResolver",
         args: [labelhashId(params.label), ctx.subResolver],
       }),
       verify: async (read, ctx) => {
         const linked = (await read({
           address: params.userRegistry,
-          abi: registryAbi as unknown as Abi,
+          abi: registryAbi,
           functionName: "getResolver",
           args: [params.label],
         })) as Address;
-        const ok = linked.toLowerCase() === (ctx.subResolver ?? "").toLowerCase();
+        const ok =
+          linked.toLowerCase() === (ctx.subResolver ?? "").toLowerCase();
         return {
           ok,
-          detail: ok ? `${fqdnStr} now resolves via ${linked}` : `Resolver is ${linked}`,
+          detail: ok
+            ? `${fqdnStr} now resolves via ${linked}`
+            : `Resolver is ${linked}`,
         };
       },
     },
   ];
 }
 
-/** Faucet: mint test USDC to the connected wallet. */
-export function buildFaucetStep(params: { account: Address; amount: bigint }): StepDef[] {
+/** Faucet: mint USDC to the connected wallet. */
+export function buildFaucetStep(params: {
+  account: Address;
+  amount: bigint;
+  chainId?: number;
+}): StepDef[] {
+  const network = getDeployment(params.chainId);
+  if (!network.canMint)
+    throw new Error("The faucet is only available on Sepolia");
+  const deployments = network.addresses;
   return [
     {
       id: "faucet",
-      title: "Mint test USDC",
+      title: "Mint USDC",
       explain: "MockUSDC on Sepolia has an open mint for testing.",
       build: () => ({
         type: "write",
-        address: deployments.MockUSDC,
-        abi: erc20Abi as unknown as Abi,
+        address: deployments.PaymentToken,
+        abi: erc20Abi,
         functionName: "mint",
         args: [params.account, params.amount],
       }),
@@ -629,6 +875,7 @@ export function buildFaucetStep(params: { account: Address; amount: bigint }): S
 
 /** setAddr on the setup's resolver for a subname. */
 export function buildSetAddrStep(params: {
+  chainId?: number;
   resolver: Address;
   node: `0x${string}`;
   fqdn: string;
@@ -642,21 +889,62 @@ export function buildSetAddrStep(params: {
       build: () => ({
         type: "write",
         address: params.resolver,
-        abi: [
-          {
-            name: "setAddr",
-            type: "function",
-            stateMutability: "nonpayable",
-            inputs: [
-              { name: "node", type: "bytes32" },
-              { name: "addr_", type: "address" },
-            ],
-            outputs: [],
-          },
-        ] as const as unknown as Abi,
-        functionName: "setAddr",
-        args: [params.node, params.addr],
+        abi: resolverAbi,
+        functionName: "setAddress",
+        args: [toHex(packetToBytes(params.fqdn)), 60n, params.addr],
       }),
+      verify: async (read) => {
+        const data = encodeFunctionData({
+          abi: [
+            {
+              type: "function",
+              name: "addr",
+              stateMutability: "view",
+              inputs: [{ type: "bytes32" }],
+              outputs: [{ type: "address" }],
+            },
+          ],
+          functionName: "addr",
+          args: [params.node],
+        });
+        const result = await read({
+          address: params.resolver,
+          abi: resolverAbi,
+          functionName: "resolve",
+          args: [toHex(packetToBytes(params.fqdn)), data],
+        });
+        const addr = decodeFunctionResult({
+          abi: [
+            {
+              type: "function",
+              name: "addr",
+              stateMutability: "view",
+              inputs: [{ type: "bytes32" }],
+              outputs: [{ type: "address" }],
+            },
+          ],
+          functionName: "addr",
+          data: result as `0x${string}`,
+        });
+        return {
+          ok: addr.toLowerCase() === params.addr.toLowerCase(),
+          detail: "Address record verified",
+        };
+      },
     },
   ];
+}
+
+/** Stable identity for a requested write, independent of its transaction hash. */
+export function actionIntent(action: StepAction): string {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "string" }],
+      [
+        JSON.stringify(action, (_, value) =>
+          typeof value === "bigint" ? value.toString() : value,
+        ),
+      ],
+    ),
+  );
 }

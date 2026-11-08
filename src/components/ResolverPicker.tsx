@@ -1,3 +1,4 @@
+import { useResolverAccess } from "../hooks/useResolverAccess";
 /**
  * Resolver selection for the setup. ENSv2 convention: one PermissionedResolver
  * per ACCOUNT serving all its names, so reuse comes first:
@@ -24,12 +25,13 @@ export function ResolverPicker() {
   const { session, dispatch } = useLab();
   const nameStatus = useNameStatus(session?.parentLabel, address);
   const { resolvers } = useDeployedResolvers(address);
+  const canReuseParent = useResolverAccess(nameStatus.resolver, address);
 
   const choices = useMemo<Choice[]>(() => {
     const out: Choice[] = [];
     const seen = new Set<string>();
     const parentResolver = nameStatus.resolver;
-    if (parentResolver && parentResolver !== zeroAddress) {
+    if (canReuseParent && parentResolver && parentResolver !== zeroAddress) {
       out.push({
         kind: "existing",
         address: parentResolver,
@@ -46,7 +48,7 @@ export function ResolverPicker() {
     out.push({ kind: "deploy" });
     out.push({ kind: "none" });
     return out;
-  }, [nameStatus.resolver, resolvers, session?.parentLabel]);
+  }, [nameStatus.resolver, resolvers, session?.parentLabel, canReuseParent]);
 
   // Default to reuse: if the parent name already has a resolver and the user
   // hasn't touched the choice (fresh session, setup not run), select it.
@@ -58,12 +60,12 @@ export function ResolverPicker() {
       !session.addresses.resolver &&
       !session.sequences["setup"];
     const parentResolver = nameStatus.resolver;
-    if (untouched && parentResolver && parentResolver !== zeroAddress) {
+    if (untouched && canReuseParent && parentResolver && parentResolver !== zeroAddress) {
       autoApplied.current = true;
       dispatch({ type: "set-deploy-resolver", value: false });
       dispatch({ type: "patch-addresses", patch: { resolver: parentResolver } });
     }
-  }, [session, nameStatus.resolver, dispatch]);
+  }, [session, nameStatus.resolver, dispatch, canReuseParent]);
 
   if (!session) return null;
 
@@ -93,8 +95,7 @@ export function ResolverPicker() {
     <fieldset className="flex flex-col gap-2 rounded-lg border border-neutral-200 p-4">
       <legend className="px-1 text-sm font-medium">Resolver for your subnames</legend>
       <p className="text-xs opacity-60">
-        In ENSv2 one resolver serves all of an account's names, so reusing yours is the
-        normal setup. Records for each subname live under its own namehash inside it.
+        Reuse a compatible resolver you administer, or deploy a fresh one. Its setter permissions apply across all names it serves; subname owners can deploy their own resolver for independent control.
       </p>
       {choices.map((choice) => {
         const key =

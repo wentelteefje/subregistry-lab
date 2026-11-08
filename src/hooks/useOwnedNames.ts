@@ -1,9 +1,8 @@
+import { publicRpcTransport } from "../lib/rpcPool";
 /**
  * Scans the ETHRegistry for .eth names owned by the connected wallet.
  *
- * Fast path: ONE full-range eth_getLogs per event type against the dedicated
- * scan RPC (Tenderly's public gateway accepts unbounded ranges). Fallback:
- * chunked scan (<=9999 blocks, drpc free-tier limit) via the wagmi transport.
+ * Public RPC pool with bounded, resumable adaptive scans for each event type.
  * Incremental via a per-wallet localStorage cache; current ownership is
  * confirmed on-chain afterwards (transfers away / expiry make log-derived
  * candidacy stale).
@@ -11,21 +10,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient } from "wagmi";
-import { createPublicClient, http, type Abi, type AbiEvent, type Address, type PublicClient } from "viem";
-import { sepolia } from "viem/chains";
+import { createPublicClient, type Abi, type AbiEvent, type Address, type PublicClient, parseAbi } from "viem";
+
 import { registryAbi } from "../config/abis";
-import {
-  ETH_REGISTRY_DEPLOY_BLOCK,
-  LOG_CHUNK_SIZE,
-  LOG_SCAN_RPC,
-  deployments,
-} from "../config/deployments";
+import { type Deployment } from "../config/deployments";
+import { useDeployment } from "./useDeployment";
 import { classifyError } from "../lib/errors";
+import { scanRanges } from "../lib/scan";
 import {
   cacheCandidates,
   emptyCache,
   mergeCache,
-  planRanges,
   type LabelRegisteredLike,
   type ScanCache,
   type TransferSingleLike,
@@ -50,9 +45,9 @@ export type OwnedNamesResult = {
 
 const CACHE_PREFIX = "subregistry-lab:scan:v1:";
 
-function loadCache(wallet: string): ScanCache {
+function loadCache(wallet: string, network: Deployment): ScanCache {
   try {
-    const raw = localStorage.getItem(CACHE_PREFIX + wallet.toLowerCase());
+    const raw = localStorage.getItem(CACHE_PREFIX + network.deploymentSet + ":" + wallet.toLowerCase());
     if (raw) {
       const parsed = JSON.parse(raw) as ScanCache;
       if (parsed.version === 1) return parsed;
@@ -60,12 +55,12 @@ function loadCache(wallet: string): ScanCache {
   } catch {
     // fall through to fresh cache
   }
-  return emptyCache(wallet, ETH_REGISTRY_DEPLOY_BLOCK);
+  return emptyCache(wallet, BigInt(network.registryDeployBlock));
 }
 
-function saveCache(cache: ScanCache): void {
+function saveCache(cache: ScanCache, network: Deployment): void {
   try {
-    localStorage.setItem(CACHE_PREFIX + cache.wallet, JSON.stringify(cache));
+    localStorage.setItem(CACHE_PREFIX + network.deploymentSet + ":" + cache.wallet, JSON.stringify(cache));
   } catch {
     // non-fatal
   }
@@ -81,20 +76,21 @@ const labelRegisteredEvent = (registryAbi as Abi).find(
 /** One getLogs pass over [from, to]; throws on RPC rejection. */
 async function fetchSpan(
   client: PublicClient,
+  network: Deployment,
   wallet: Address,
   from: bigint,
   to: bigint,
 ): Promise<{ transfers: TransferSingleLike[]; labels: LabelRegisteredLike[] }> {
   const [transferLogs, labelLogs] = await Promise.all([
     client.getLogs({
-      address: deployments.ETHRegistry,
+      address: network.addresses.ETHRegistry,
       event: transferSingleEvent,
       args: { to: wallet },
       fromBlock: from,
       toBlock: to,
     }),
     client.getLogs({
-      address: deployments.ETHRegistry,
+      address: network.addresses.ETHRegistry,
       event: labelRegisteredEvent,
       fromBlock: from,
       toBlock: to,
@@ -116,17 +112,18 @@ async function fetchSpan(
 }
 
 /** Grace period is a registrar-level concept; used only for a UI hint. */
-const GRACE_SECONDS = 28n * 24n * 60n * 60n;
+const registrarGraceAbi = parseAbi(["function GRACE_PERIOD() view returns (uint64)"]);
 
 export function useOwnedNames(wallet?: Address): OwnedNamesResult {
+  const network = useDeployment();
   const client = usePublicClient();
   const scanClient = useMemo(
     () =>
       createPublicClient({
-        chain: sepolia,
-        transport: http(LOG_SCAN_RPC),
+        chain: network.chain,
+        transport: publicRpcTransport(network.id),
       }),
-    [],
+    [network],
   );
   const [names, setNames] = useState<OwnedName[]>([]);
   const [loading, setLoading] = useState(false);
@@ -147,59 +144,31 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
 
     (async () => {
       try {
-        let cache = loadCache(wallet);
+        let cache = loadCache(wallet, network);
         const head = await client.getBlockNumber();
         const from = BigInt(cache.lastScannedBlock) + 1n;
 
         if (from <= head) {
-          try {
-            // Fast path: one full-range request per event type.
-            const span = await fetchSpan(scanClient, wallet, from, head);
-            cache = mergeCache(cache, span.transfers, span.labels, head);
-            saveCache(cache);
-            if (!cancelled) setProgress(0.9);
-          } catch {
-            // Fallback: chunked scan via the wagmi transport.
-            let chunk = LOG_CHUNK_SIZE;
-            let ranges = planRanges(from, head, chunk);
-            const total = ranges.length;
-            let index = 0;
-            while (index < ranges.length) {
-              const range = ranges[index];
-              try {
-                const span = await fetchSpan(
-                  client as PublicClient,
-                  wallet,
-                  range.fromBlock,
-                  range.toBlock,
-                );
-                cache = mergeCache(cache, span.transfers, span.labels, range.toBlock);
-                saveCache(cache);
-                index += 1;
-                if (!cancelled) setProgress(Math.min(0.9, (index / total) * 0.9));
-              } catch (err) {
-                const classified = classifyError(err);
-                if (classified.kind === "rpc-range" && chunk > 500n) {
-                  chunk = chunk / 2n;
-                  ranges = planRanges(range.fromBlock, head, chunk);
-                  index = 0;
-                } else {
-                  throw err;
-                }
-              }
-            }
-          }
+          await scanRanges(async (start, end) => {
+            const span = await fetchSpan(scanClient, network, wallet, start, end);
+            if (cancelled) throw Error("Log scan cancelled");
+            cache = mergeCache(cache, span.transfers, span.labels, end);
+            saveCache(cache, network);
+            setProgress(0.9);
+            return [];
+          }, from, head, () => cancelled);
         }
 
         // Confirm current ownership + expiry on-chain for each candidate.
         // (getState carries status/expiry/latestOwner in one call; the
         // deployed registries have no getOwner view.)
+        const graceSeconds = await client.readContract({ address: network.addresses.ETHRegistrar, abi: registrarGraceAbi, functionName: "GRACE_PERIOD" });
         const candidates = cacheCandidates(cache);
         const now = BigInt(Math.floor(Date.now() / 1000));
         const confirmed: OwnedName[] = [];
         for (const candidate of candidates) {
           const state = (await client.readContract({
-            address: deployments.ETHRegistry,
+            address: network.addresses.ETHRegistry,
             abi: registryAbi as Abi,
             functionName: "getState",
             args: [labelhashId(candidate.label)],
@@ -217,7 +186,7 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
           } else if (
             state.expiry > 0n &&
             state.expiry <= now &&
-            state.expiry + GRACE_SECONDS > now
+            state.expiry + graceSeconds > now
           ) {
             // expired but within the registrar grace window: still theirs to renew
             confirmed.push({
@@ -244,7 +213,7 @@ export function useOwnedNames(wallet?: Address): OwnedNamesResult {
       cancelled = true;
       scanning.current = false;
     };
-  }, [wallet, client, scanClient, nonce]);
+  }, [wallet, client, scanClient, nonce, network]);
 
   return { names, loading, progress, error, refresh };
 }

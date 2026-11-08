@@ -1,16 +1,14 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
-import { fallback, http } from "wagmi";
-import { sepolia } from "wagmi/chains";
+import { publicRpcTransport } from "./lib/rpcPool";
+import { mainnet, sepolia } from "wagmi/chains";
 
-/** Sepolia-only: ENSv2 test deployments live there. */
+/** ENSv2 deployments on Ethereum and Sepolia. */
 export const wagmiConfig = getDefaultConfig({
   appName: "ENSv2 Subregistry Lab",
   projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || "SUBREGISTRY_LAB_INJECTED_ONLY",
-  chains: [sepolia],
+  chains: [sepolia, mainnet],
   transports: {
-    [sepolia.id]: fallback([
-      http("https://sepolia.drpc.org"),
-      http("https://ethereum-sepolia-rpc.publicnode.com"),
-    ]),
+    [mainnet.id]: publicRpcTransport(mainnet.id),
+    [sepolia.id]: publicRpcTransport(sepolia.id),
   },
 });
